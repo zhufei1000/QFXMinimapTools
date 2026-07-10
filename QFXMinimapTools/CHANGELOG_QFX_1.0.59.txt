@@ -1,0 +1,7 @@
+QFXMinimapTools 1.0.59
+
+- FPS / latency now refreshes independently with a lightweight 5-second ticker.
+- Coordinates no longer use a standing ticker in the bottom row; they update once, then refresh while hovering the minimap or coordinate text, matching the lightweight reference-plugin style.
+- Time, FPS, coordinates, phase ID, mail and crafting-order indicators now refresh independently instead of using one unified row refresh path.
+- Phase ID remains target/mouseover-event driven only.
+- Kept the pure-text, low-strata bottom row layout from 1.0.58.

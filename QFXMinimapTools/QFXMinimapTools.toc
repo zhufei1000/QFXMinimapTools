@@ -1,0 +1,25 @@
+## Interface: 120005, 120007
+## Title: QFX Minimap Tools
+## Title-zhCN: QFX 小地图工具
+## Notes: Lightweight minimap enhancement, stats text, and minimap button bag.
+## Notes-zhCN: 轻量级小地图增强、信息文字显示与小地图按钮收纳。
+## Version: 1.0.59
+## Author: QFX / 群飞轩
+## SavedVariables: QFXMinimapToolsDB
+## LoadSavedVariablesFirst: true
+## IconTexture: Interface\AddOns\QFXMinimapTools\Media\QFXGoldQ
+## AddonCompartmentFunc: QFXMinimapTools_ToggleOptions
+
+Locale.lua
+Core/Utils.lua
+Core/Defaults.lua
+Core/QFXMinimapTools.lua
+Modules/Minimap.lua
+Modules/FlightMode.lua
+Modules/Performance.lua
+Modules/Stats.lua
+Modules/ButtonBag.lua
+UI/Widgets.lua
+UI/Options.lua
+Core/API.lua
+Core/Core.lua

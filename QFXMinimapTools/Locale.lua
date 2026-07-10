@@ -1,0 +1,235 @@
+local ADDON_NAME, QMT = ...
+QMT = QMT or {}
+_G.QFXMinimapTools = QMT
+
+local TITLE = "QFX Minimap Tools"
+local CLIENT_LOCALE = GetLocale and GetLocale() or "enUS"
+local LOCALE = CLIENT_LOCALE
+local ZH = CLIENT_LOCALE == "zhCN" or CLIENT_LOCALE == "zhTW"
+
+local L_ZH = {
+    TITLE = "QFX 小地图工具",
+    UI_LANGUAGE = "界面语言",
+    LANGUAGE_AUTO = "跟随客户端",
+    LANGUAGE_ZH = "中文",
+    LANGUAGE_EN = "English",
+    LANGUAGE_CHANGED = "界面语言已切换。",
+    PANEL_DESC = "轻量级小地图增强、信息显示与小地图按钮收纳。",
+    OPEN_OPTIONS = "打开设置界面",
+    COMMAND_HINT = "也可以输入 /qfmt 或 /qmini 打开设置。",
+    MINIMAP = "小地图",
+    STATS = "显示内容",
+    BUTTONS = "按钮收纳",
+    ENABLE_ENHANCE = "启用小地图设置",
+    SQUARE = "方形小地图（需/RL）",
+    HIDE_COMPARTMENT = "隐藏暴雪插件菜单按钮",
+    BORDER_STYLE = "小地图外框颜色",
+    BORDER_AUTO = "自动接管",
+    BORDER_ACTIONBAR = "动作条方形",
+    BORDER_ELVUI = "ElvUI",
+    BORDER_NDUI = "NDui",
+    BORDER_DARKMODE = "DarkMode",
+    BORDER_BLACK = "黑色",
+    BORDER_SILVER = "银白色",
+    BORDER_DARK = "深灰色",
+    BORDER_GOLD = "金色",
+    BORDER_CLASS = "职业色",
+    BORDER_CUSTOM = "自定义/API",
+    LOCK_MINIMAP = "锁定小地图位置",
+    RESET_MINIMAP_POSITION = "恢复小地图默认位置",
+    UNLOCK_MOVE_TIP = "取消锁定后，可直接拖动小地图。移动后会保存当前位置，不再自动贴边。",
+    SHOW_LOCATION = "显示位置",
+    SHOW_COORDS = "显示坐标",
+    SHOW_TIME = "显示时间",
+    SHOW_SYSTEM = "显示 FPS / 延迟",
+    SHOW_CPU_USAGE = "关闭插件 CPU Profiling（全局，需/RL）",
+    PERFORMANCE_TITLE = "性能信息",
+    FPS_LABEL = "帧数",
+    HOME_LATENCY = "本地延迟",
+    WORLD_LATENCY = "世界延迟",
+    ADDON_MEMORY_TITLE = "插件内存占用",
+    CPU_PROFILE_DISABLE_DONE = "已尝试全局关闭插件 CPU Profiling。若状态未立即变化，请 /reload。",
+    CPU_PROFILE_ENABLE_DONE = "已尝试开启插件 CPU Profiling。需要 /reload 后才能统计 CPU。",
+    CPU_PROFILE_RELOAD = "CPU Profiling 改动需要重载界面后完全生效。",
+    BUTTON_MANAGER = "按钮选择",
+    BUTTON_MANAGER_TIP = "勾选：收纳到 Q 按钮；取消：保留在小地图外。",
+    SHOW_PHASE_ID = "显示位面编号",
+    SHOW_DIFFICULTY = "显示副本难度",
+    COLLECT_BUTTONS = "启用小地图按钮收纳",
+    AUTO_CLOSE = "鼠标离开后自动关闭收纳框",
+    EXCLUDE = "不收纳按钮名（逗号分隔）",
+    RESCAN = "重新扫描按钮",
+    RESET = "恢复默认",
+    RELOAD = "重载界面",
+    PREV = "上一页",
+    NEXT = "下一页",
+    LEFT_TIP = "左键：展开/收起按钮",
+    RIGHT_TIP = "右键：打开设置",
+    BAG_EMPTY = "没有发现可收纳的小地图按钮",
+    FONT_SIZE = "文字大小",
+    MINIMAP_SCALE = "小地图缩放",
+    FLIGHT_SECTION = "野外飞行居中",
+    FLIGHT_CENTER = "野外飞行时居中小地图",
+    FLIGHT_SCALE = "飞行缩放",
+    FLIGHT_POS_Y = "飞行垂直位置",
+    FLIGHT_ALPHA = "飞行透明度",
+    FLIGHT_GATHERING_ONLY = "仅学会草药学或采矿时启用居中",
+    FLIGHT_GATHERING_ONLY_TIP = "默认勾选。用于采集场景：只有角色已经学习草药学或采矿时，野外飞行居中才会触发；取消勾选后恢复旧版飞行即居中。",
+    GATHERING_PROFESSION_FOUND = "已检测到草药学或采矿：飞行居中可触发。",
+    GATHERING_PROFESSION_NOT_FOUND = "未检测到草药学或采矿：当前勾选下不会触发飞行居中。",
+    GATHERING_PROFESSION_OFF = "专业检测已关闭：飞行时按原规则居中。",
+    BUTTON_SCALE = "收纳按钮缩放",
+    BUTTONS_PER_ROW = "每行按钮数",
+    COPY_COORDS = "左键复制坐标",
+    CALENDAR_OPEN = "左键打开日历",
+    CALENDAR_PENDING = "有日历通知 / 待处理邀请",
+    MAIL_PENDING = "有新邮件",
+    RESET_DONE = "已恢复默认设置。",
+    POSITION_RESET_DONE = "小地图已恢复默认自动贴边位置。",
+    OVERVIEW = "总览",
+    OVERVIEW_DESC = "常用开关集中在这里；更细设置按左侧分类进入，减少误操作。",
+    QUICK_SWITCHES = "常用开关",
+    QUICK_SWITCHES_DESC = "只保留最常调整的项目，其他细节放到对应分页。",
+    SIMPLE_USAGE = "使用说明",
+    SIMPLE_USAGE_DESC = "左侧切换分类；设置会立即生效。",
+    ADVANCED = "高级",
+    ADVANCED_DESC = "语言、性能与重置等不常用选项。",
+    MINIMAP_DESC = "方形小地图、外框、缩放和位置相关设置。",
+    STATS_DESC = "控制小地图周围的位置、坐标、时间、系统信息等文字。",
+    BUTTONS_DESC = "把其他插件的小地图按钮收纳到 Q 按钮，减少小地图拥挤。",
+    FLIGHT_DESC = "仅在野外飞行时临时放大小地图；落地后恢复原位置。",
+    COORDS_DECIMALS = "坐标小数位",
+    SQUARE_TIP = "切换方形/圆形通常需要 /reload 后完全生效。",
+}
+
+local L_EN = {
+    TITLE = TITLE,
+    UI_LANGUAGE = "UI language",
+    LANGUAGE_AUTO = "Follow client",
+    LANGUAGE_ZH = "Chinese",
+    LANGUAGE_EN = "English",
+    LANGUAGE_CHANGED = "UI language changed.",
+    PANEL_DESC = "Lightweight minimap enhancement, stats text, and minimap button bag.",
+    OPEN_OPTIONS = "Open options panel",
+    COMMAND_HINT = "You can also type /qfmt or /qmini to open options.",
+    MINIMAP = "Minimap",
+    STATS = "Stats",
+    BUTTONS = "Button Bag",
+    ENABLE_ENHANCE = "Enable minimap settings",
+    SQUARE = "Square minimap (/RL)",
+    HIDE_COMPARTMENT = "Hide Blizzard addon compartment",
+    BORDER_STYLE = "Minimap border color",
+    BORDER_AUTO = "Auto skin",
+    BORDER_ACTIONBAR = "Action button",
+    BORDER_ELVUI = "ElvUI",
+    BORDER_NDUI = "NDui",
+    BORDER_DARKMODE = "DarkMode",
+    BORDER_BLACK = "Black",
+    BORDER_SILVER = "Silver",
+    BORDER_DARK = "Dark gray",
+    BORDER_GOLD = "Gold",
+    BORDER_CLASS = "Class",
+    BORDER_CUSTOM = "Custom/API",
+    LOCK_MINIMAP = "Lock minimap position",
+    RESET_MINIMAP_POSITION = "Reset minimap position",
+    UNLOCK_MOVE_TIP = "Unlock to drag the minimap. After moving, the saved position is used instead of auto snap.",
+    SHOW_LOCATION = "Show location",
+    SHOW_COORDS = "Show coordinates",
+    SHOW_TIME = "Show time",
+    SHOW_SYSTEM = "Show FPS / latency",
+    SHOW_CPU_USAGE = "Disable addon CPU profiling (global, /RL)",
+    PERFORMANCE_TITLE = "Performance",
+    FPS_LABEL = "FPS",
+    HOME_LATENCY = "Home latency",
+    WORLD_LATENCY = "World latency",
+    ADDON_MEMORY_TITLE = "Addon memory usage",
+    CPU_PROFILE_DISABLE_DONE = "Tried to globally disable addon CPU profiling. If the status does not change immediately, /reload.",
+    CPU_PROFILE_ENABLE_DONE = "Tried to enable addon CPU profiling. /reload is required before CPU numbers work.",
+    CPU_PROFILE_RELOAD = "CPU Profiling changes fully apply after a UI reload.",
+    BUTTON_MANAGER = "Button List",
+    BUTTON_MANAGER_TIP = "Checked: collect into Q bag; unchecked: keep outside the bag.",
+    SHOW_PHASE_ID = "Show phase ID",
+    SHOW_DIFFICULTY = "Show instance difficulty",
+    COLLECT_BUTTONS = "Enable minimap button bag",
+    AUTO_CLOSE = "Auto-close bag on mouse leave",
+    EXCLUDE = "Ignored button names (comma separated)",
+    RESCAN = "Rescan buttons",
+    RESET = "Reset defaults",
+    RELOAD = "Reload UI",
+    PREV = "Prev",
+    NEXT = "Next",
+    LEFT_TIP = "Left-click: toggle button bag",
+    RIGHT_TIP = "Right-click: open options",
+    BAG_EMPTY = "No minimap buttons found",
+    FONT_SIZE = "Font size",
+    MINIMAP_SCALE = "Minimap scale",
+    FLIGHT_SECTION = "Outdoor Flight Center",
+    FLIGHT_CENTER = "Center minimap while flying outdoors",
+    FLIGHT_SCALE = "Flight scale",
+    FLIGHT_POS_Y = "Flight vertical offset",
+    FLIGHT_ALPHA = "Flight opacity",
+    FLIGHT_GATHERING_ONLY = "Only center if Herbalism or Mining is learned",
+    FLIGHT_GATHERING_ONLY_TIP = "Enabled by default for gathering. Flight center triggers only when the character has learned Herbalism or Mining. Untick to keep the old always-center flight behavior.",
+    GATHERING_PROFESSION_FOUND = "Herbalism or Mining detected. Flight center can trigger.",
+    GATHERING_PROFESSION_NOT_FOUND = "No Herbalism or Mining detected. Flight center will not trigger while this option is enabled.",
+    GATHERING_PROFESSION_OFF = "Profession check is disabled. Flight center uses the original rules.",
+    BUTTON_SCALE = "Collected button scale",
+    BUTTONS_PER_ROW = "Buttons per row",
+    COPY_COORDS = "Left-click to copy coordinates",
+    CALENDAR_OPEN = "Left-click to open calendar",
+    CALENDAR_PENDING = "Calendar notification / pending invite",
+    MAIL_PENDING = "New mail",
+    RESET_DONE = "Defaults restored.",
+    POSITION_RESET_DONE = "Minimap position reset to default auto snap.",
+    OVERVIEW = "Overview",
+    OVERVIEW_DESC = "Common toggles are grouped here. Detailed settings are split into the left-side pages.",
+    QUICK_SWITCHES = "Quick switches",
+    QUICK_SWITCHES_DESC = "Only the most-used options stay here; fine tuning lives in each page.",
+    SIMPLE_USAGE = "Usage",
+    SIMPLE_USAGE_DESC = "Switch pages on the left. Most settings apply immediately.",
+    ADVANCED = "Advanced",
+    ADVANCED_DESC = "Language, performance, reset, and other less-used options.",
+    MINIMAP_DESC = "Square minimap, border, scale, and position settings.",
+    STATS_DESC = "Control location, coordinates, time, system text, and other minimap labels.",
+    BUTTONS_DESC = "Collect other addon minimap buttons into the Q button to keep the minimap clean.",
+    FLIGHT_DESC = "Temporarily enlarge the minimap while flying outdoors, then restore it after landing.",
+    COORDS_DECIMALS = "Coords decimals",
+    SQUARE_TIP = "Switching square/round mode usually needs /reload to fully apply.",
+}
+
+local L = ZH and L_ZH or L_EN
+QMT.TITLE = TITLE
+QMT.CLIENT_LOCALE = CLIENT_LOCALE
+QMT.LOCALE = LOCALE
+QMT.ZH = ZH
+QMT.L_ZH = L_ZH
+QMT.L_EN = L_EN
+QMT.L = L
+
+local function SelectLocale(choice)
+    if choice == "zhCN" or choice == "zhTW" or choice == "ZH" then
+        ZH = true
+        LOCALE = "zhCN"
+        L = L_ZH
+    elseif choice == "enUS" or choice == "enGB" or choice == "EN" then
+        ZH = false
+        LOCALE = "enUS"
+        L = L_EN
+    else
+        LOCALE = CLIENT_LOCALE
+        ZH = CLIENT_LOCALE == "zhCN" or CLIENT_LOCALE == "zhTW"
+        L = ZH and L_ZH or L_EN
+    end
+    QMT.LOCALE = LOCALE
+    QMT.ZH = ZH
+    QMT.L = L
+end
+
+local function NormalizeLanguageChoice(choice)
+    if choice == "zhCN" or choice == "zhTW" or choice == "ZH" then return "zhCN" end
+    if choice == "enUS" or choice == "enGB" or choice == "EN" then return "enUS" end
+    return "AUTO"
+end
+
+QMT.SelectLocale = SelectLocale
+QMT.NormalizeLanguageChoice = NormalizeLanguageChoice
