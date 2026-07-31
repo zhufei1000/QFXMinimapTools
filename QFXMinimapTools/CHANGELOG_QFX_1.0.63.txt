@@ -1,0 +1,8 @@
+QFXMinimapTools 1.0.63
+
+Outdoor flight clean minimap mode
+- Flight center now keeps only the minimap body and the optional location label.
+- Hides the queue eye, map attachment, tracking, difficulty, mail, crafting orders, calendar, utility text, and Q button bag while flying.
+- Suppresses controls that remain attached to MinimapCluster so no duplicate icons stay at the original top-right position.
+- Restores exact pre-flight alpha and mouse interaction states on landing, then reapplies the normal QFX layout.
+- Restores the expanded button bag after landing when it was open before flight center started.

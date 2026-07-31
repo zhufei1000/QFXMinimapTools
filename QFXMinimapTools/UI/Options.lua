@@ -65,6 +65,7 @@ end
 
 local function CommitFlightOptions()
     QMT:CommitOptions(function()
+        if QMT.RefreshGatheringProfessionCache then QMT:RefreshGatheringProfessionCache() end
         QMT:ApplyAll()
         if QMT.RefreshFlightEventRegistration then QMT:RefreshFlightEventRegistration() end
         if QMT.RefreshOutdoorFlightWatcher then QMT:RefreshOutdoorFlightWatcher() end
@@ -166,7 +167,7 @@ local function AddAdvancedPage(f, page)
         {key = "enUS", label = L.LANGUAGE_EN},
     }, function() return QMT:GetLanguageLabel(QMT.db and QMT.db.ui and QMT.db.ui.language or "AUTO") end, function(key) QMT:SetUILanguage(key) end, function() end); y = y - 52
 
-    UI.CreateCheck(s, L.SHOW_CPU_USAGE, 18, y, function() return QMT.db.performance and QMT.db.performance.disableCPUProfiling ~= false end, function(v) QMT.db.performance = QMT.db.performance or {}; QMT.db.performance.disableCPUProfiling = v and true or false; QMT:ApplyCPUProfilerSetting("user") end, 420, function() end); y = y - 48
+    UI.CreateCheck(s, L.SHOW_CPU_USAGE, 18, y, function() return QMT.IsCPUProfilerDisabled and QMT:IsCPUProfilerDisabled() or false end, function(v) if QMT.ApplyCPUProfilerSetting then QMT:ApplyCPUProfilerSetting(v, "user") end end, 420, function() end); y = y - 48
     UI.CreateButton(s, L.RESET, 18, y, 128, 26, function() QMT:ResetDefaults() end)
     UI.CreateButton(s, L.RELOAD, 158, y, 128, 26, function() ReloadUI() end)
 end
@@ -350,10 +351,12 @@ function QMT:RegisterSettingsCategory()
 
     if registered then
         self.settingsRegistered = true
+        self.settingsRegisterRetryCount = 0
         return true
     end
 
-    if C_Timer and not self.settingsRegisterRetryQueued then
+    self.settingsRegisterRetryCount = (self.settingsRegisterRetryCount or 0) + 1
+    if C_Timer and not self.settingsRegisterRetryQueued and self.settingsRegisterRetryCount <= 10 then
         self.settingsRegisterRetryQueued = true
         C_Timer.After(1, function()
             QMT.settingsRegisterRetryQueued = nil

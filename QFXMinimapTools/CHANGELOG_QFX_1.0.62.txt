@@ -1,0 +1,7 @@
+QFXMinimapTools 1.0.62
+
+Minimap corner attachments
+- Moved the native Blizzard queue eye to the lower-right corner of the square minimap.
+- Moved the Retail 12.0.7 ExpansionLandingPageMinimapButton (map attachment / talent-rune entry) to the lower-left corner.
+- Both controls remain Blizzard-owned for visibility; QFX only reparents/repositions them and removes decorative borders.
+- Original parent, anchors, scale, alpha, frame strata/level, mouse state, and decoration are still restored when the square minimap is disabled.

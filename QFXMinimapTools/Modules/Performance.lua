@@ -47,12 +47,6 @@ local function SetCVarCompat(name, value)
     return ok
 end
 
-local function RegisterCVarCompat(name, defaultValue)
-    if C_CVar and C_CVar.RegisterCVar then
-        SafeCall(C_CVar.RegisterCVar, name, tostring(defaultValue or "0"))
-    end
-end
-
 function QMT:IsBlizzardAddonProfilerEnabled()
     if C_AddOnProfiler and C_AddOnProfiler.IsEnabled then
         local enabled = SafeCall(C_AddOnProfiler.IsEnabled)
@@ -65,19 +59,23 @@ function QMT:IsBlizzardAddonProfilerEnabled()
 end
 
 
-function QMT:ApplyCPUProfilerSetting(reason)
-    local perf = self.db and self.db.performance or {}
-    local disable = perf.disableCPUProfiling ~= false
-    local oldScript = GetCVarBoolCompat("scriptProfile")
-    local oldBlizz = self:IsBlizzardAddonProfilerEnabled()
+function QMT:IsCPUProfilerDisabled()
+    local scriptEnabled = GetCVarBoolCompat("scriptProfile")
+    local blizzardEnabled = self:IsBlizzardAddonProfilerEnabled()
+    return scriptEnabled ~= true and blizzardEnabled ~= true
+end
 
-    RegisterCVarCompat("addonProfilerEnabled", "1")
+function QMT:ApplyCPUProfilerSetting(disable, reason)
+    -- This function is intentionally user-driven. QFXMinimapTools never calls it
+    -- during login, reload, ApplyAll, or delayed initialization.
+    disable = disable and true or false
+    local oldScript = GetCVarBoolCompat("scriptProfile")
+
     if disable then
         SetCVarCompat("addonProfilerEnabled", "0")
         SetCVarCompat("scriptProfile", "0")
     else
-        -- This path is for diagnostics only. scriptProfile requires /reload before
-        -- legacy GetAddOnCPUUsage/UpdateAddOnCPUUsage values become useful.
+        -- Diagnostic mode: legacy CPU values may require a UI reload.
         SetCVarCompat("addonProfilerEnabled", "1")
         SetCVarCompat("scriptProfile", "1")
     end

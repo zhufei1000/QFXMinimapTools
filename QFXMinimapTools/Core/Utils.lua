@@ -61,10 +61,16 @@ local function ColorText(text, hex)
     return "|c" .. (hex or AccentHex()) .. text .. "|r"
 end
 
+local safeCallErrors = {}
 local function SafeCall(func, ...)
     if type(func) ~= "function" then return nil end
     local ok, a, b, c, d = pcall(func, ...)
     if ok then return a, b, c, d end
+    QMT.lastSafeCallError = a
+    if QMT.DEBUG and not safeCallErrors[tostring(a)] then
+        safeCallErrors[tostring(a)] = true
+        Print("SafeCall: " .. tostring(a))
+    end
     return nil
 end
 

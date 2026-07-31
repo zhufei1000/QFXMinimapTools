@@ -8,7 +8,7 @@ local Print = QMT.Print
 local L = setmetatable({}, { __index = function(_, key) return QMT.L and QMT.L[key] end })
 
 local defaults = {
-    version = 35,
+    version = 37,
     ui = {
         language = "AUTO",
     },
@@ -45,7 +45,6 @@ local defaults = {
         exclude = "MiniMapTracking,MiniMapMailFrame,MiniMapWorldMapButton,MinimapZoomIn,MinimapZoomOut,GameTimeFrame,TimeManagerClockButton,QueueStatusButton,QueueStatusMinimapButton,AddonCompartmentFrame,ExpansionLandingPageMinimapButton,GarrisonLandingPageMinimapButton,CraftingOrderFrame,ProfessionsCustomerOrdersFrame,ProfessionsCustomerOrders_MinimapButton",
     },
     performance = {
-        disableCPUProfiling = true,
         addonCount = 8,
     },
     display = {
@@ -85,17 +84,24 @@ local function NormalizeCurrentDB(db)
     db.display.durability = nil
 
     db.minimap = db.minimap or {}
-    -- 1.0.59 uses an independent lightweight refresh model. Do not preserve old high-frequency
-    -- stored intervals; keep existing visual choices where they still make sense.
-    if oldVersion < defaults.version then
-        db.minimap.flightCenter = false
-        db.display.coordsInterval = math.max(2.00, tonumber(db.display.coordsInterval or 2) or 2)
-        db.display.systemInterval = math.max(5.00, tonumber(db.display.systemInterval or 5) or 5)
-        db.display.timeInterval = math.max(60.00, tonumber(db.display.timeInterval or 60) or 60)
+    -- Keep the user's feature choices across addon updates. Older builds reset
+    -- flightCenter whenever the internal DB version changed, which could make the
+    -- gathering restriction appear broken after updating the addon.
+    db.display.coordsInterval = math.max(2.00, tonumber(db.display.coordsInterval or 2) or 2)
+    db.display.systemInterval = math.max(5.00, tonumber(db.display.systemInterval or 5) or 5)
+    db.display.timeInterval = math.max(60.00, tonumber(db.display.timeInterval or 60) or 60)
+    if type(db.minimap.flightCenterOnlyGathering) ~= "boolean" then
+        db.minimap.flightCenterOnlyGathering = true
     end
 
     db.bag = db.bag or {}
     db.bag.manualExclude = type(db.bag.manualExclude) == "table" and db.bag.manualExclude or {}
+
+    db.performance = db.performance or {}
+    -- 1.0.60 no longer changes the client's global CPU profiler during login.
+    -- Remove the old stored enforcement flag; the advanced-page control now reflects
+    -- and changes the live profiler state only when the user explicitly clicks it.
+    db.performance.disableCPUProfiling = nil
 
     db.version = defaults.version
 end

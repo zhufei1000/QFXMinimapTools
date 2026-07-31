@@ -38,27 +38,48 @@ local function IsGatheringProfessionName(name)
     return lower == "herbalism" or lower == "mining"
 end
 
-function QMT:HasGatheringProfession()
+function QMT:RefreshGatheringProfessionCache()
     if type(GetProfessions) ~= "function" or type(GetProfessionInfo) ~= "function" then
         -- Older clients should keep the old behavior instead of disabling flight center forever.
+        self.hasGatheringProfession = true
         return true
     end
 
-    local profs = { GetProfessions() }
-    for _, professionIndex in ipairs(profs) do
+    local primary1, primary2, archaeology, fishing, cooking = GetProfessions()
+    local professionIndexes = {primary1, primary2, archaeology, fishing, cooking}
+    local found = false
+    for _, professionIndex in ipairs(professionIndexes) do
         if professionIndex then
-            local info = { GetProfessionInfo(professionIndex) }
-            if IsGatheringProfessionName(info[1]) then
-                return true
-            end
-            for _, value in ipairs(info) do
-                if GATHERING_SKILL_IDS[tonumber(value or 0) or 0] then
-                    return true
+            local info = {GetProfessionInfo(professionIndex)}
+            local first = info[1]
+            if type(first) == "table" then
+                local name = first.name or first.professionName or first.skillLineName
+                if IsGatheringProfessionName(name) then found = true end
+                if not found then
+                    for _, value in pairs(first) do
+                        if GATHERING_SKILL_IDS[tonumber(value or 0) or 0] then found = true break end
+                    end
+                end
+            else
+                if IsGatheringProfessionName(first) then found = true end
+                if not found then
+                    for _, value in ipairs(info) do
+                        if GATHERING_SKILL_IDS[tonumber(value or 0) or 0] then found = true break end
+                    end
                 end
             end
+            if found then break end
         end
     end
-    return false
+    self.hasGatheringProfession = found
+    return found
+end
+
+function QMT:HasGatheringProfession(forceRefresh)
+    if forceRefresh or self.hasGatheringProfession == nil then
+        return self:RefreshGatheringProfessionCache()
+    end
+    return self.hasGatheringProfession and true or false
 end
 
 function QMT:GetGatheringProfessionStatusText()
@@ -74,7 +95,10 @@ end
 function QMT:ShouldUseOutdoorFlightCenter()
     local db = self.db and self.db.minimap
     if not db or not db.enabled or db.flightCenter ~= true then return false end
-    if db.flightCenterOnlyGathering == true and self.HasGatheringProfession and not self:HasGatheringProfession() then return false end
+    -- When the option is unticked, profession detection must be bypassed entirely.
+    -- This also avoids a stale profession cache preventing non-gatherers from centering.
+    local gatheringRestrictionEnabled = db.flightCenterOnlyGathering == true
+    if gatheringRestrictionEnabled and self.HasGatheringProfession and not self:HasGatheringProfession() then return false end
     if UnitInVehicle and UnitInVehicle("player") then return false end
     if UnitOnTaxi and UnitOnTaxi("player") then return false end
     local inInstance, instanceType = false, "none"
@@ -89,7 +113,73 @@ function QMT:CaptureOutdoorFlightReturnState()
     self.flightReturnState = {
         alpha = Minimap.GetAlpha and Minimap:GetAlpha() or 1,
         zoom = Minimap.GetZoom and Minimap:GetZoom() or nil,
+        bagShown = self.bagFrame and self.bagFrame.IsShown and self.bagFrame:IsShown() or false,
     }
+end
+
+function QMT:HideOutdoorFlightMinimapControls()
+    if not self:IsOutdoorFlightCenterActive() then return end
+
+    -- Native/static controls may remain attached to MinimapCluster instead of the
+    -- moved Minimap. Suppress them in place so no duplicate controls remain at the
+    -- original top-right location while the map itself is centered.
+    if self.CaptureNativeMinimapControls then SafeCall(self.CaptureNativeMinimapControls, self) end
+    for frame in pairs(self.nativeMinimapControls or {}) do
+        SafeCall(self.SetFrameFlightSuppressed, self, frame, true)
+    end
+
+    if self.GetNativeQueueFrames then
+        for _, queue in ipairs(self:GetNativeQueueFrames()) do
+            SafeCall(self.SetFrameFlightSuppressed, self, queue, true)
+        end
+    else
+        local queue = self.GetManagedNativeQueueFrame and self:GetManagedNativeQueueFrame()
+        if queue then SafeCall(self.SetFrameFlightSuppressed, self, queue, true) end
+    end
+
+    if self.GetNativeMailFrames then
+        for _, frame in ipairs(self:GetNativeMailFrames()) do
+            SafeCall(self.SetFrameFlightSuppressed, self, frame, true)
+        end
+    end
+    if self.GetNativeCraftingOrderFrames then
+        for _, frame in ipairs(self:GetNativeCraftingOrderFrames()) do
+            SafeCall(self.SetFrameFlightSuppressed, self, frame, true)
+        end
+    end
+
+    local tracking = self.GetNativeTrackingFrame and self:GetNativeTrackingFrame()
+    if tracking then SafeCall(self.SetFrameFlightSuppressed, self, tracking, true) end
+    if self.GetNativeDifficultyFrames then
+        for _, frame in ipairs(self:GetNativeDifficultyFrames()) do
+            SafeCall(self.SetFrameFlightSuppressed, self, frame, true)
+        end
+    end
+    local landing = _G.ExpansionLandingPageMinimapButton
+    if landing then SafeCall(self.SetFrameFlightSuppressed, self, landing, true) end
+
+    if self.squareBorder then self.squareBorder:Hide() end
+    if self.mailIndicator then self.mailIndicator:Hide() end
+    if self.indicatorButtons then
+        for _, frame in pairs(self.indicatorButtons) do if frame and frame.Hide then frame:Hide() end end
+    end
+    if self.utilityRow then self.utilityRow:Hide() end
+    if self.utilityTextFrames then
+        for _, frame in pairs(self.utilityTextFrames) do if frame and frame.Hide then frame:Hide() end end
+    end
+    SafeCall(self.StopUtilitySystemHoverTicker, self)
+    SafeCall(self.StopUtilityCoordinatesHoverTicker, self)
+
+    if self.bagButton then self.bagButton:Hide() end
+    if self.bagFrame then self.bagFrame:Hide() end
+
+    -- Keep only the optional zone/location label. All other addon text belongs to
+    -- the normal minimap layout and is suspended during flight focus mode.
+    if self.statFrames then
+        for key, frame in pairs(self.statFrames) do
+            if key ~= "location" and frame and frame.Hide then frame:Hide() end
+        end
+    end
 end
 
 function QMT:ApplyOutdoorFlightCenterVisual()
@@ -97,6 +187,7 @@ function QMT:ApplyOutdoorFlightCenterVisual()
     local db = self.db.minimap
     self:CaptureOutdoorFlightReturnState()
     self.flightModeActive = true
+    if self.ApplyMinimapMoveMode then SafeCall(self.ApplyMinimapMoveMode, self) end
 
     local flightScale = Clamp(db.flightScale, 1.00, 3.00)
     local flightPosY = Clamp(db.flightPosY, -240, 40)
@@ -109,16 +200,22 @@ function QMT:ApplyOutdoorFlightCenterVisual()
     if Minimap.SetAlpha then Minimap:SetAlpha(flightAlpha) end
     if Minimap.SetZoom then SafeCall(Minimap.SetZoom, Minimap, 0) end
 
-    if self.squareBorder then self.squareBorder:Hide() end
-    self:ApplyQueueStatusButtonPosition()
-    self:ApplyMailFramePosition()
-    self:ApplyTrackingButtonPosition()
-    self:PlaceBagButton()
-    if self.statFrames then
-        for key in pairs(self.statFrames) do self:PlaceStatFrame(key) end
-        self:UpdateAllStats()
+    if self.RefreshMinimapAttachedElements then
+        SafeCall(self.RefreshMinimapAttachedElements, self, true, false)
+    else
+        SafeCall(self.ApplyQueueStatusButtonPosition, self)
+        SafeCall(self.ApplyMailFramePosition, self)
+        SafeCall(self.ApplyTrackingButtonPosition, self)
+        SafeCall(self.ApplyDifficultyFramePosition, self)
+        SafeCall(self.ApplyExpansionLandingPageButtonPosition, self)
+        SafeCall(self.UpdateUtilityRow, self)
+        SafeCall(self.PlaceBagButton, self)
+        if self.statFrames then
+            for key in pairs(self.statFrames) do SafeCall(self.PlaceStatFrame, self, key) end
+            SafeCall(self.UpdateAllStats, self)
+        end
     end
-    if self.bagFrame and self.bagFrame:IsShown() then self:LayoutBag() end
+    self:HideOutdoorFlightMinimapControls()
 end
 
 function QMT:RestoreOutdoorFlightCenterVisual()
@@ -127,21 +224,37 @@ function QMT:RestoreOutdoorFlightCenterVisual()
     local state = self.flightReturnState or {}
     self.flightModeActive = false
 
+    SafeCall(self.RestoreAllFlightSuppressedFrames, self)
+    if self.SetNativeMinimapControlsHidden then
+        SafeCall(self.SetNativeMinimapControlsHidden, self, db.enabled and db.square)
+    end
     if Minimap and Minimap.SetAlpha then Minimap:SetAlpha(state.alpha or 1) end
     if Minimap and Minimap.SetZoom and type(state.zoom) == "number" then SafeCall(Minimap.SetZoom, Minimap, state.zoom) end
     if Minimap and Minimap.SetScale then Minimap:SetScale(Clamp(db.scale, 0.50, 2.00)) end
     if self.squareBorder then self.squareBorder:SetShown(db.enabled and db.square) end
 
     if db.autoSnap then self:ApplySmartTopRightSnap() else self:ApplyManualMinimapPosition() end
-    self:ApplyQueueStatusButtonPosition()
-    self:ApplyMailFramePosition()
-    self:ApplyTrackingButtonPosition()
-    self:PlaceBagButton()
-    if self.statFrames then
-        for key in pairs(self.statFrames) do self:PlaceStatFrame(key) end
-        self:UpdateAllStats()
+    if self.ApplyMinimapMoveMode then SafeCall(self.ApplyMinimapMoveMode, self) end
+    if self.RefreshMinimapAttachedElements then
+        SafeCall(self.RefreshMinimapAttachedElements, self, true, false)
+    else
+        SafeCall(self.ApplyQueueStatusButtonPosition, self)
+        SafeCall(self.ApplyMailFramePosition, self)
+        SafeCall(self.ApplyTrackingButtonPosition, self)
+        SafeCall(self.ApplyDifficultyFramePosition, self)
+        SafeCall(self.ApplyExpansionLandingPageButtonPosition, self)
+        SafeCall(self.UpdateUtilityRow, self)
+        SafeCall(self.PlaceBagButton, self)
+        if self.statFrames then
+            for key in pairs(self.statFrames) do SafeCall(self.PlaceStatFrame, self, key) end
+            SafeCall(self.UpdateAllStats, self)
+        end
     end
-    if self.bagFrame and self.bagFrame:IsShown() then self:LayoutBag() end
+
+    if state.bagShown and self.db and self.db.bag and self.db.bag.enabled and self.bagFrame then
+        self.bagFrame:Show()
+        SafeCall(self.LayoutBag, self)
+    end
     self.flightReturnState = nil
 end
 
@@ -162,22 +275,8 @@ function QMT:RequestOutdoorFlightProbe(duration)
     self.lastFlightProbeRequest = now
     local window = tonumber(duration) or 8.0
     self.flightProbeUntil = math.max(self.flightProbeUntil or 0, now + window)
-    if self.flightModeActive then return end
-    if not self.flightProbe then
-        self.flightProbe = CreateFrame("Frame")
-    end
-    self.flightProbe.elapsed = 0
-    self.flightProbe:SetScript("OnUpdate", function(frame, elapsed)
-        frame.elapsed = (frame.elapsed or 0) + (elapsed or 0)
-        if frame.elapsed < 0.08 then return end
-        frame.elapsed = 0
-        SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
-        if QMT.flightModeActive or Now() >= (QMT.flightProbeUntil or 0) then
-            frame:SetScript("OnUpdate", nil)
-            frame.elapsed = 0
-            SafeCall(QMT.RefreshOutdoorFlightWatcher, QMT)
-        end
-    end)
+    -- One watcher owns all flight-state polling. Event bursts only extend its
+    -- short probe window; they never start a second OnUpdate loop.
     SafeCall(self.RefreshOutdoorFlightWatcher, self)
 end
 
@@ -187,8 +286,6 @@ local QFX_FLIGHT_EVENTS = {
     "PLAYER_STOPPED_MOVING",
     "PLAYER_CONTROL_GAINED",
     "PLAYER_CONTROL_LOST",
-    "PLAYER_REGEN_ENABLED",
-    "SKILL_LINES_CHANGED",
     "UNIT_AURA",
 }
 
@@ -197,7 +294,13 @@ function QMT:RefreshFlightEventRegistration()
     if not frame or not frame.RegisterEvent or not frame.UnregisterEvent then return end
     local enabled = self.db and self.db.minimap and self.db.minimap.enabled and self.db.minimap.flightCenter == true
     if enabled and not self.flightEventsRegistered then
-        for _, event in ipairs(QFX_FLIGHT_EVENTS) do frame:RegisterEvent(event) end
+        for _, event in ipairs(QFX_FLIGHT_EVENTS) do
+            if event == "UNIT_AURA" and frame.RegisterUnitEvent then
+                frame:RegisterUnitEvent(event, "player")
+            else
+                frame:RegisterEvent(event)
+            end
+        end
         self.flightEventsRegistered = true
     elseif (not enabled) and self.flightEventsRegistered then
         for _, event in ipairs(QFX_FLIGHT_EVENTS) do frame:UnregisterEvent(event) end
@@ -222,9 +325,10 @@ function QMT:RefreshOutdoorFlightWatcher()
     if shouldWatch then
         self.flightWatcher:SetScript("OnUpdate", function(frame, elapsed)
             frame.elapsed = (frame.elapsed or 0) + (elapsed or 0)
-            if frame.elapsed < 0.20 then return end
+            local interval = QMT.flightModeActive and 0.20 or 0.10
+            if frame.elapsed < interval then return end
             frame.elapsed = 0
-            QMT:UpdateOutdoorFlightCenterState(false)
+            SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
             local stillWatch = QMT.flightModeActive
                 or Now() < (QMT.flightProbeUntil or 0)
                 or (IsMounted and IsMounted())
@@ -236,5 +340,4 @@ function QMT:RefreshOutdoorFlightWatcher()
         self.flightWatcher.elapsed = 0
     end
 end
-
 

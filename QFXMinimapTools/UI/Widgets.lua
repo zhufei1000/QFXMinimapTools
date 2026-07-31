@@ -393,10 +393,21 @@ function UI.CreateEditBox(parent, labelText, x, y, labelW, w, getValue, setValue
     eb:SetText(getValue and getValue() or "")
     eb:SetCursorPosition(0)
     eb.qfxLabel = label
+    eb.qfxLastCommittedText = eb:GetText() or ""
+    local committing = false
     local function Commit(self)
-        if setValue then setValue(self:GetText() or "") end
-        self:ClearFocus()
+        if committing then return end
+        local text = self:GetText() or ""
+        if text == self.qfxLastCommittedText then
+            if self.HasFocus and self:HasFocus() then self:ClearFocus() end
+            return
+        end
+        committing = true
+        self.qfxLastCommittedText = text
+        if setValue then setValue(text) end
+        if self.HasFocus and self:HasFocus() then self:ClearFocus() end
         if onCommit then onCommit() elseif QMT.CommitOptions then QMT:CommitOptions() else QMT:ApplyAll() end
+        committing = false
     end
     eb:SetScript("OnEnterPressed", Commit)
     eb:SetScript("OnEditFocusLost", Commit)

@@ -1,0 +1,8 @@
+QFXMinimapTools 1.0.64
+
+Minimap movement and flight-center fixes
+- Fixed the unlocked minimap sometimes being impossible to drag because the mouse events were attached to a low-level decorative border.
+- Added a dedicated drag overlay above the minimap while unlocked; it is removed automatically when locked or during flight-center mode.
+- Fixed addon updates resetting the main flight-center option, which could make the gathering restriction appear to ignore its unchecked state.
+- When “Only center if Herbalism or Mining is learned” is unchecked, profession detection is now bypassed completely.
+- Existing flight-center and gathering-option choices are preserved across future addon updates.

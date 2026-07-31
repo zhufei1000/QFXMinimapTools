@@ -228,9 +228,7 @@ end
 function QMT:HasCalendarNotification()
     local frame = self.statFrames and self.statFrames.time
     local bang = frame and frame.CalendarBang
-    if bang and bang.IsShown and bang:IsShown() then return true end
-    local ok, shown = pcall(function() return self:GetNativeCalendarInviteSignal() end)
-    return ok and shown and true or false
+    return bang and bang.IsShown and bang:IsShown() or false
 end
 
 function QMT:UpdateCalendarNotificationIndicator()

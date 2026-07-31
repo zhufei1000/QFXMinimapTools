@@ -14,6 +14,113 @@ local Print = QMT.Print
 local NormalizeLanguageChoice = QMT.NormalizeLanguageChoice
 local SelectLocale = QMT.SelectLocale
 
+local function QFXCapturePoints(frame)
+    local points = {}
+    if not frame or not frame.GetNumPoints or not frame.GetPoint then return points end
+    local count = frame:GetNumPoints() or 0
+    for i = 1, count do points[#points + 1] = {frame:GetPoint(i)} end
+    return points
+end
+
+local function QFXRestorePoints(frame, points)
+    if not frame or not frame.ClearAllPoints or not frame.SetPoint then return end
+    frame:ClearAllPoints()
+    for _, point in ipairs(points or {}) do
+        if point and point[1] then SafeCall(frame.SetPoint, frame, unpack(point)) end
+    end
+end
+
+local function QFXIsMouseEnabled(frame)
+    if frame and frame.IsMouseEnabled then
+        local enabled = SafeCall(frame.IsMouseEnabled, frame)
+        if enabled ~= nil then return enabled and true or false end
+    end
+    return nil
+end
+
+-- Flight-center mode must hide managed controls without changing Blizzard's
+-- own Show/Hide state. Only alpha and mouse interaction are temporarily
+-- suppressed; the exact pre-flight values are restored on landing.
+function QMT:SetFrameFlightSuppressed(frame, suppressed)
+    if not frame then return end
+    self.flightSuppressedFrameStates = self.flightSuppressedFrameStates or {}
+    local state = self.flightSuppressedFrameStates[frame]
+
+    if suppressed then
+        if not state then
+            state = {
+                alpha = frame.GetAlpha and frame:GetAlpha() or 1,
+                mouseEnabled = QFXIsMouseEnabled(frame),
+            }
+            self.flightSuppressedFrameStates[frame] = state
+        end
+        if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
+        if frame.EnableMouse then SafeCall(frame.EnableMouse, frame, false) end
+        return
+    end
+
+    if not state then return end
+    if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, state.alpha or 1) end
+    if frame.EnableMouse and state.mouseEnabled ~= nil then
+        SafeCall(frame.EnableMouse, frame, state.mouseEnabled)
+    end
+    self.flightSuppressedFrameStates[frame] = nil
+end
+
+function QMT:RestoreAllFlightSuppressedFrames()
+    for frame, state in pairs(self.flightSuppressedFrameStates or {}) do
+        if frame and state then
+            if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, state.alpha or 1) end
+            if frame.EnableMouse and state.mouseEnabled ~= nil then
+                SafeCall(frame.EnableMouse, frame, state.mouseEnabled)
+            end
+        end
+    end
+    self.flightSuppressedFrameStates = {}
+end
+
+function QMT:CaptureOriginalMinimapState()
+    if self.originalMinimapState or not Minimap or not MinimapCluster then return end
+    self.originalMinimapState = {
+        minimap = {
+            points = QFXCapturePoints(Minimap),
+            scale = Minimap.GetScale and Minimap:GetScale() or 1,
+            alpha = Minimap.GetAlpha and Minimap:GetAlpha() or 1,
+            clamped = Minimap.IsClampedToScreen and Minimap:IsClampedToScreen() or nil,
+            frameStrata = Minimap.GetFrameStrata and Minimap:GetFrameStrata() or nil,
+            frameLevel = Minimap.GetFrameLevel and Minimap:GetFrameLevel() or nil,
+            maskTexture = (Minimap.GetMaskTexture and SafeCall(Minimap.GetMaskTexture, Minimap)) or "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask",
+        },
+        cluster = {
+            points = QFXCapturePoints(MinimapCluster),
+            scale = MinimapCluster.GetScale and MinimapCluster:GetScale() or 1,
+            clamped = MinimapCluster.IsClampedToScreen and MinimapCluster:IsClampedToScreen() or nil,
+            frameStrata = MinimapCluster.GetFrameStrata and MinimapCluster:GetFrameStrata() or nil,
+            frameLevel = MinimapCluster.GetFrameLevel and MinimapCluster:GetFrameLevel() or nil,
+        },
+    }
+end
+
+function QMT:RestoreOriginalMinimapState()
+    local state = self.originalMinimapState
+    if not state or not Minimap or not MinimapCluster then return end
+    local map = state.minimap or {}
+    local cluster = state.cluster or {}
+    if self.flightModeActive then self:RestoreOutdoorFlightCenterVisual() end
+    QFXRestorePoints(MinimapCluster, cluster.points)
+    QFXRestorePoints(Minimap, map.points)
+    if MinimapCluster.SetScale then SafeCall(MinimapCluster.SetScale, MinimapCluster, cluster.scale or 1) end
+    if Minimap.SetScale then SafeCall(Minimap.SetScale, Minimap, map.scale or 1) end
+    if Minimap.SetAlpha then SafeCall(Minimap.SetAlpha, Minimap, map.alpha or 1) end
+    if MinimapCluster.SetClampedToScreen and cluster.clamped ~= nil then SafeCall(MinimapCluster.SetClampedToScreen, MinimapCluster, cluster.clamped) end
+    if Minimap.SetClampedToScreen and map.clamped ~= nil then SafeCall(Minimap.SetClampedToScreen, Minimap, map.clamped) end
+    if MinimapCluster.SetFrameStrata and cluster.frameStrata then SafeCall(MinimapCluster.SetFrameStrata, MinimapCluster, cluster.frameStrata) end
+    if MinimapCluster.SetFrameLevel and cluster.frameLevel then SafeCall(MinimapCluster.SetFrameLevel, MinimapCluster, cluster.frameLevel) end
+    if Minimap.SetFrameStrata and map.frameStrata then SafeCall(Minimap.SetFrameStrata, Minimap, map.frameStrata) end
+    if Minimap.SetFrameLevel and map.frameLevel then SafeCall(Minimap.SetFrameLevel, Minimap, map.frameLevel) end
+    if Minimap.SetMaskTexture and map.maskTexture then SafeCall(Minimap.SetMaskTexture, Minimap, map.maskTexture) end
+end
+
 function QMT:ResetMinimapPosition()
     if not self.db or not self.db.minimap then return end
     local db = self.db.minimap
@@ -132,7 +239,11 @@ function QMT:CaptureNativeMinimapControls()
         }
         if obj.HookScript and not obj.QFXMinimapToolsCleanHook then
             obj:HookScript("OnShow", function(frame)
-                if QMT:ShouldCleanSquareMinimap() and frame.Hide then frame:Hide() end
+                if QMT.IsOutdoorFlightCenterActive and QMT:IsOutdoorFlightCenterActive() then
+                    SafeCall(QMT.SetFrameFlightSuppressed, QMT, frame, true)
+                elseif QMT:ShouldCleanSquareMinimap() and frame.Hide then
+                    frame:Hide()
+                end
             end)
             obj.QFXMinimapToolsCleanHook = true
         end
@@ -163,8 +274,13 @@ function QMT:SetNativeMinimapControlsHidden(hidden)
                 if obj.SetAlpha then obj:SetAlpha(0) end
                 if obj.Hide then obj:Hide() end
             else
-                if obj.SetAlpha then obj:SetAlpha(info.alpha or 1) end
-                if info.shown and obj.Show then obj:Show() end
+                if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
+                    SafeCall(self.SetFrameFlightSuppressed, self, obj, true)
+                else
+                    SafeCall(self.SetFrameFlightSuppressed, self, obj, false)
+                    if obj.SetAlpha then obj:SetAlpha(info.alpha or 1) end
+                    if info.shown and obj.Show then obj:Show() end
+                end
             end
         end
     end
@@ -217,6 +333,9 @@ function QMT:RefreshMinimapAttachedElements(updateStats, layoutBag)
         if updateStats then SafeCall(self.UpdateAllStats, self) end
     end
     if layoutBag and self.bagFrame and self.bagFrame:IsShown() then SafeCall(self.LayoutBag, self) end
+    if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() and self.HideOutdoorFlightMinimapControls then
+        SafeCall(self.HideOutdoorFlightMinimapControls, self)
+    end
 end
 
 function QMT:RequestAttachedElementRefresh(updateStats, layoutBag)
@@ -240,11 +359,28 @@ function QMT:RequestAttachedElementRefresh(updateStats, layoutBag)
 end
 
 
+local function QFXAddUniqueFrame(list, seen, frame)
+    if frame and not seen[frame] then
+        seen[frame] = true
+        list[#list + 1] = frame
+    end
+end
+
+function QMT:GetNativeQueueFrames()
+    local frames, seen = {}, {}
+    QFXAddUniqueFrame(frames, seen, _G.QueueStatusMinimapButton)
+    QFXAddUniqueFrame(frames, seen, _G.QueueStatusButton)
+    QFXAddUniqueFrame(frames, seen, MinimapCluster and MinimapCluster.QueueStatusMinimapButton)
+    QFXAddUniqueFrame(frames, seen, MinimapCluster and MinimapCluster.QueueStatusButton)
+    return frames
+end
+
 function QMT:GetManagedNativeQueueFrame()
-    -- Retail clients can expose more than one queue-eye frame name. The minimap-era
-    -- QueueStatusMinimapButton is the one that belongs on the minimap; QueueStatusButton
-    -- may still exist for other Blizzard UI paths and must not be dragged on top of it.
-    return _G.QueueStatusMinimapButton or _G.QueueStatusButton
+    local frames = self.GetNativeQueueFrames and self:GetNativeQueueFrames() or {}
+    for _, frame in ipairs(frames) do
+        if frame.IsShown and frame:IsShown() then return frame end
+    end
+    return frames[1]
 end
 
 
@@ -254,88 +390,122 @@ function QMT:CaptureNativeQueueFrame(frame)
     if self.queueStatusOriginal[frame] then return end
     self.queueStatusOriginal[frame] = {
         parent = frame.GetParent and frame:GetParent(),
-        point = {frame:GetPoint(1)},
+        points = QFXCapturePoints(frame),
         scale = frame.GetScale and frame:GetScale() or 1,
         width = frame.GetWidth and frame:GetWidth(),
         height = frame.GetHeight and frame:GetHeight(),
         alpha = frame.GetAlpha and frame:GetAlpha() or 1,
-        shown = frame.IsShown and frame:IsShown() or false,
+        frameStrata = frame.GetFrameStrata and frame:GetFrameStrata() or nil,
+        frameLevel = frame.GetFrameLevel and frame:GetFrameLevel() or nil,
+        mouseEnabled = QFXIsMouseEnabled(frame),
     }
 end
 
 local function QFXRestoreNativeQueueFrame(frame, original)
     if not frame or not original then return end
     SafeCall(frame.SetParent, frame, original.parent or MinimapCluster or Minimap)
-    SafeCall(frame.ClearAllPoints, frame)
-    if original.point and original.point[1] then
-        SafeCall(frame.SetPoint, frame, unpack(original.point))
-    end
+    QFXRestorePoints(frame, original.points)
     if original.scale and frame.SetScale then SafeCall(frame.SetScale, frame, original.scale) end
     if original.width and original.height and frame.SetSize then
         SafeCall(frame.SetSize, frame, original.width, original.height)
     end
     if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, original.alpha or 1) end
-    if original.shown then
-        if frame.Show then SafeCall(frame.Show, frame) end
-    else
-        if frame.Hide then SafeCall(frame.Hide, frame) end
-    end
+    if frame.SetFrameStrata and original.frameStrata then SafeCall(frame.SetFrameStrata, frame, original.frameStrata) end
+    if frame.SetFrameLevel and original.frameLevel then SafeCall(frame.SetFrameLevel, frame, original.frameLevel) end
+    if frame.EnableMouse and original.mouseEnabled ~= nil then SafeCall(frame.EnableMouse, frame, original.mouseEnabled) end
+    if QMT.RestoreIconBackgroundAndBorder then QMT:RestoreIconBackgroundAndBorder(frame) end
+    -- Blizzard owns current queue visibility; do not restore a stale login snapshot.
 end
 
 
 function QMT:ApplyQueueStatusButtonPosition()
     if not Minimap then return end
-    local q = self:GetManagedNativeQueueFrame()
-    if not q then return end
+    local frames = self:GetNativeQueueFrames()
+    if not frames or #frames == 0 then return end
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
 
     if not self:ShouldCleanSquareMinimap() then
-        QFXRestoreNativeQueueFrame(q, self.queueStatusOriginal and self.queueStatusOriginal[q])
+        for _, q in ipairs(frames) do
+            SafeCall(self.SetFrameFlightSuppressed, self, q, false)
+            QFXRestoreNativeQueueFrame(q, self.queueStatusOriginal and self.queueStatusOriginal[q])
+            if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, q, true) end
+        end
         return
     end
 
-    self:CaptureNativeQueueFrame(q)
+    for _, q in ipairs(frames) do
+        self:CaptureNativeQueueFrame(q)
+        if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, q, false) end
 
-    -- Only relocate Blizzard's minimap queue-eye. Never call Show() here: Blizzard owns
-    -- the queue state and display timing. Forcing Show() makes the eye flash even when the
-    -- player has not queued for anything.
-    SafeCall(q.SetParent, q, Minimap)
-    SafeCall(q.ClearAllPoints, q)
-    SafeCall(q.SetPoint, q, "BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", 2, 2)
-    SafeCall(q.SetSize, q, 24, 24)
-    SafeCall(q.SetScale, q, 0.5)
-    SafeCall(q.SetFrameStrata, q, "HIGH")
-    if q.SetFrameLevel and Minimap.GetFrameLevel then
-        SafeCall(q.SetFrameLevel, q, (Minimap:GetFrameLevel() or 0) + 35)
-    end
-    if q.SetAlpha then SafeCall(q.SetAlpha, q, 1) end
-    self:StripIconBackgroundAndBorder(q)
+        -- Relocate every known Blizzard queue-eye frame. Some Retail builds expose
+        -- both names, but only one is the live visible button for the current queue.
+        -- Never call Show(); Blizzard remains the owner of queue visibility.
+        SafeCall(q.SetParent, q, Minimap)
+        SafeCall(q.ClearAllPoints, q)
+        SafeCall(q.SetPoint, q, "BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", -2, 2)
+        SafeCall(q.SetSize, q, 24, 24)
+        SafeCall(q.SetScale, q, 0.5)
+        SafeCall(q.SetFrameStrata, q, "HIGH")
+        if q.SetFrameLevel and Minimap.GetFrameLevel then
+            SafeCall(q.SetFrameLevel, q, (Minimap:GetFrameLevel() or 0) + 35)
+        end
+        if q.SetAlpha then SafeCall(q.SetAlpha, q, 1) end
+        self:StripIconBackgroundAndBorder(q)
+        if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, q, true) end
 
-    if q.HookScript and not q.QFXMinimapToolsQueueHooked then
-        q:HookScript("OnShow", function()
-            QMT:ApplyQueueStatusButtonPosition()
-        end)
-        q.QFXMinimapToolsQueueHooked = true
+        if q.HookScript and not q.QFXMinimapToolsQueueHooked then
+            q:HookScript("OnShow", function()
+                QMT:ApplyQueueStatusButtonPosition()
+            end)
+            q.QFXMinimapToolsQueueHooked = true
+        end
     end
 end
 
-local function QFXHasNewMail(owner)
-    local apiHasMail
-    if HasNewMail then
-        apiHasMail = SafeCall(HasNewMail)
-        if apiHasMail then return true end
+function QMT:GetNativeMailFrames()
+    local frames, seen = {}, {}
+    local function Add(frame)
+        if frame and not seen[frame] then
+            seen[frame] = true
+            frames[#frames + 1] = frame
+        end
     end
-    if owner and owner.mailNativeWantsShow then return true end
-    local mail = _G.MiniMapMailFrame
-    if mail and mail.IsShown and mail:IsShown() then return true end
-    return apiHasMail and true or false
+
+    local indicator = MinimapCluster and MinimapCluster.IndicatorFrame
+    -- Retail 10.0.5+ keeps the native mail indicator here. Keep the older
+    -- aliases as fallbacks for other client branches and compatibility UIs.
+    Add(indicator and indicator.MailFrame)
+    Add(indicator and indicator.MailIndicator)
+    Add(MinimapCluster and MinimapCluster.MailFrame)
+    Add(_G.MiniMapMailFrame)
+    Add(_G.MinimapMailFrame)
+    return frames
+end
+
+function QMT:GetNativeMailFrame()
+    local frames = self:GetNativeMailFrames()
+    return frames[1]
+end
+
+local function QFXHasNewMail()
+    if HasNewMail then
+        local hasMail = SafeCall(HasNewMail)
+        if hasMail ~= nil then return hasMail and true or false end
+    end
+    for _, mail in ipairs(QMT:GetNativeMailFrames()) do
+        if mail.IsShown and mail:IsShown() then return true end
+    end
+    return false
 end
 
 function QMT:ShouldUseCustomMailIndicator()
+    local d = self.db and self.db.display or {}
     return self.db
         and self.db.minimap
         and self.db.minimap.enabled
-        and self.db.minimap.square
+        and d.time
         and Minimap
+        and not (self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive())
 end
 
 function QMT:GetMailIndicator()
@@ -384,80 +554,70 @@ function QMT:GetMailIndicator()
     return frame
 end
 
-function QMT:CaptureNativeMailFrame()
-    local mail = _G.MiniMapMailFrame
-    if not mail or self.mailFrameOriginal then return end
-    self.mailFrameOriginal = {
-        parent = mail.GetParent and mail:GetParent(),
-        point = {mail:GetPoint(1)},
-        scale = mail.GetScale and mail:GetScale() or 1,
-        width = mail.GetWidth and mail:GetWidth(),
-        height = mail.GetHeight and mail:GetHeight(),
+function QMT:CaptureNativeMailFrame(mail)
+    if not mail then return end
+    self.mailFrameOriginal = self.mailFrameOriginal or {}
+    if self.mailFrameOriginal[mail] then return end
+    -- QFX only changes visibility interaction state. Do not snapshot or later
+    -- overwrite Blizzard/Edit Mode anchors, size, parent, or frame layering.
+    self.mailFrameOriginal[mail] = {
         alpha = mail.GetAlpha and mail:GetAlpha() or 1,
+        mouseEnabled = QFXIsMouseEnabled(mail),
     }
 end
 
 function QMT:RestoreNativeMailFrame()
-    local mail = _G.MiniMapMailFrame
-    local original = self.mailFrameOriginal
-    if not mail or not original then return end
-
-    SafeCall(mail.SetParent, mail, original.parent or MinimapCluster or Minimap)
-    SafeCall(mail.ClearAllPoints, mail)
-    if original.point and original.point[1] then
-        SafeCall(mail.SetPoint, mail, unpack(original.point))
+    for mail, original in pairs(self.mailFrameOriginal or {}) do
+        if mail and original then
+            if mail.SetAlpha then SafeCall(mail.SetAlpha, mail, original.alpha or 1) end
+            if mail.EnableMouse and original.mouseEnabled ~= nil then
+                SafeCall(mail.EnableMouse, mail, original.mouseEnabled)
+            end
+        end
     end
-    if original.scale then SafeCall(mail.SetScale, mail, original.scale) end
-    if original.width and original.height and mail.SetSize then
-        SafeCall(mail.SetSize, mail, original.width, original.height)
-    end
-    if mail.SetAlpha then SafeCall(mail.SetAlpha, mail, original.alpha or 1) end
 end
 
+
 function QMT:ApplyMailFramePosition()
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local useCustom = self:ShouldUseCustomMailIndicator()
-    local mail = _G.MiniMapMailFrame
     local indicator = self.mailIndicator
 
-    if useCustom then
-        self:CaptureNativeMailFrame()
-        self.mailNativeWantsShow = self.mailNativeWantsShow or (mail and mail.IsShown and mail:IsShown()) or false
-
-        -- Suppress Blizzard's native mail frame while square mode is active. The
-        -- visible mail affordance now lives in the bottom utility row.
-        if mail then
-            if mail.SetAlpha then SafeCall(mail.SetAlpha, mail, 0) end
-            if mail.Hide then
-                self.suppressingMailNative = true
-                SafeCall(mail.Hide, mail)
-                self.suppressingMailNative = false
+    if useCustom or flightActive then
+        -- Suppress every known Blizzard mail-frame alias. Retail moved the
+        -- active icon to MinimapCluster.IndicatorFrame.MailFrame, while the
+        -- old MiniMapMailFrame global may still exist as a separate object.
+        -- During flight center the native indicator must stay suppressed too,
+        -- otherwise it can reappear at the old top-right cluster position.
+        for _, mail in ipairs(self:GetNativeMailFrames()) do
+            self:CaptureNativeMailFrame(mail)
+            if flightActive then
+                SafeCall(self.SetFrameFlightSuppressed, self, mail, true)
+            else
+                SafeCall(self.SetFrameFlightSuppressed, self, mail, false)
+                if mail.SetAlpha then SafeCall(mail.SetAlpha, mail, 0) end
+                if mail.EnableMouse then SafeCall(mail.EnableMouse, mail, false) end
             end
             if mail.HookScript and not mail.QFXMinimapToolsMailSuppressHooked then
                 mail:HookScript("OnShow", function(frame)
+                    local isFlight = QMT.IsOutdoorFlightCenterActive and QMT:IsOutdoorFlightCenterActive()
+                    if isFlight then
+                        SafeCall(QMT.SetFrameFlightSuppressed, QMT, frame, true)
+                        SafeCall(QMT.UpdateTimeStatusIcons, QMT)
+                        return
+                    end
                     if not QMT:ShouldUseCustomMailIndicator() then return end
-                    QMT.mailNativeWantsShow = true
-                    local function HideNativeMailAgain()
-                        if QMT:ShouldUseCustomMailIndicator() then
-                            if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
-                            if frame.Hide then
-                                QMT.suppressingMailNative = true
-                                SafeCall(frame.Hide, frame)
-                                QMT.suppressingMailNative = false
-                            end
-                            SafeCall(QMT.ApplyMailFramePosition, QMT)
-                            SafeCall(QMT.UpdateTimeStatusIcons, QMT)
-                        end
+                    local function SuppressNativeMailAgain()
+                        if not QMT:ShouldUseCustomMailIndicator() then return end
+                        if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
+                        if frame.EnableMouse then SafeCall(frame.EnableMouse, frame, false) end
+                        SafeCall(QMT.UpdateTimeStatusIcons, QMT)
                     end
                     if C_Timer and C_Timer.After then
-                        C_Timer.After(0, HideNativeMailAgain)
+                        C_Timer.After(0, SuppressNativeMailAgain)
                     else
-                        HideNativeMailAgain()
+                        SuppressNativeMailAgain()
                     end
-                end)
-                mail:HookScript("OnHide", function()
-                    if QMT.suppressingMailNative then return end
-                    QMT.mailNativeWantsShow = false
-                    SafeCall(QMT.UpdateTimeStatusIcons, QMT)
                 end)
                 mail.QFXMinimapToolsMailSuppressHooked = true
             end
@@ -467,8 +627,11 @@ function QMT:ApplyMailFramePosition()
         SafeCall(self.UpdateTimeStatusIcons, self)
     else
         if indicator then indicator:Hide() end
-        SafeCall(self.UpdateTimeStatusIcons, self)
+        for _, mail in ipairs(self:GetNativeMailFrames()) do
+            SafeCall(self.SetFrameFlightSuppressed, self, mail, false)
+        end
         self:RestoreNativeMailFrame()
+        SafeCall(self.UpdateTimeStatusIcons, self)
     end
 end
 
@@ -491,15 +654,6 @@ local function QFXClickNativeFrame(frame, mouseButton)
     elseif frame.Click then
         SafeCall(frame.Click, frame, mouseButton)
     end
-end
-
-local function QFXShowNativeFrameTooltip(frame, owner)
-    if not frame or not owner then return false end
-    local script = frame.GetScript and frame:GetScript("OnEnter")
-    if not script then return false end
-    if GameTooltip then GameTooltip:SetOwner(owner, "ANCHOR_CURSOR") end
-    SafeCall(script, frame)
-    return GameTooltip and GameTooltip.IsShown and GameTooltip:IsShown()
 end
 
 local function QFXDecorRegionKey(region)
@@ -528,6 +682,33 @@ local function QFXLooksLikeDecorativeIconLayer(region)
     return false
 end
 
+local function QFXRememberAndClearBackdrop(obj)
+    if not obj then return end
+    if not obj.QFXMinimapToolsBackdropOriginal then
+        local original = {}
+        if obj.GetBackdropColor then
+            local r, g, b, a = SafeCall(obj.GetBackdropColor, obj)
+            if r ~= nil then original.color = {r, g, b, a} end
+        end
+        if obj.GetBackdropBorderColor then
+            local r, g, b, a = SafeCall(obj.GetBackdropBorderColor, obj)
+            if r ~= nil then original.border = {r, g, b, a} end
+        end
+        obj.QFXMinimapToolsBackdropOriginal = original
+    end
+    local original = obj.QFXMinimapToolsBackdropOriginal
+    -- Only alter backdrop channels that can be restored later.
+    if original and original.color and obj.SetBackdropColor then SafeCall(obj.SetBackdropColor, obj, 0, 0, 0, 0) end
+    if original and original.border and obj.SetBackdropBorderColor then SafeCall(obj.SetBackdropBorderColor, obj, 0, 0, 0, 0) end
+end
+
+local function QFXRestoreBackdrop(obj)
+    local original = obj and obj.QFXMinimapToolsBackdropOriginal
+    if not original then return end
+    if original.color and obj.SetBackdropColor then SafeCall(obj.SetBackdropColor, obj, unpack(original.color)) end
+    if original.border and obj.SetBackdropBorderColor then SafeCall(obj.SetBackdropBorderColor, obj, unpack(original.border)) end
+end
+
 function QMT:StripIconBackgroundAndBorder(frame)
     if not frame then return end
     local function VisitRegion(region)
@@ -543,17 +724,42 @@ function QMT:StripIconBackgroundAndBorder(frame)
         end
     end
 
-    if frame.SetBackdropColor then SafeCall(frame.SetBackdropColor, frame, 0, 0, 0, 0) end
-    if frame.SetBackdropBorderColor then SafeCall(frame.SetBackdropBorderColor, frame, 0, 0, 0, 0) end
+    QFXRememberAndClearBackdrop(frame)
     if frame.GetRegions then
         for _, region in ipairs({frame:GetRegions()}) do VisitRegion(region) end
     end
     if frame.GetChildren then
         for _, child in ipairs({frame:GetChildren()}) do
-            if child.SetBackdropColor then SafeCall(child.SetBackdropColor, child, 0, 0, 0, 0) end
-            if child.SetBackdropBorderColor then SafeCall(child.SetBackdropBorderColor, child, 0, 0, 0, 0) end
+            QFXRememberAndClearBackdrop(child)
             if child.GetRegions then
                 for _, region in ipairs({child:GetRegions()}) do VisitRegion(region) end
+            end
+        end
+    end
+end
+
+function QMT:RestoreIconBackgroundAndBorder(frame)
+    if not frame then return end
+    local function RestoreRegion(region)
+        local original = region and region.QFXMinimapToolsDecorOriginal
+        if not original then return end
+        if region.SetAlpha then SafeCall(region.SetAlpha, region, original.alpha or 1) end
+        if original.shown then
+            if region.Show then SafeCall(region.Show, region) end
+        elseif region.Hide then
+            SafeCall(region.Hide, region)
+        end
+    end
+
+    QFXRestoreBackdrop(frame)
+    if frame.GetRegions then
+        for _, region in ipairs({frame:GetRegions()}) do RestoreRegion(region) end
+    end
+    if frame.GetChildren then
+        for _, child in ipairs({frame:GetChildren()}) do
+            QFXRestoreBackdrop(child)
+            if child.GetRegions then
+                for _, region in ipairs({child:GetRegions()}) do RestoreRegion(region) end
             end
         end
     end
@@ -562,6 +768,8 @@ end
 
 local QFX_UTILITY_ROW_HEIGHT = 22
 local QFX_UTILITY_ICON_SIZE = QFX_UTILITY_ROW_HEIGHT
+local QFX_UTILITY_MAIL_ICON_SIZE = 18
+local QFX_UTILITY_CRAFTING_ICON_SIZE = 18
 
 function QMT:ApplyIndicatorTextFont(btn)
     if not btn then return end
@@ -689,32 +897,35 @@ function QMT:SetIndicatorBadge(btn, text, r, g, b)
     btn.Badge:Show()
 end
 
-function QMT:ShowIndicatorIcon(btn, atlas, fallback, r, g, b, highlightAtlas, pushedAtlas, highlightFallback, pushedFallback)
+function QMT:ShowIndicatorIcon(btn, atlas, fallback, r, g, b, highlightAtlas, pushedAtlas, highlightFallback, pushedFallback, iconWidth, iconHeight)
     if not btn then return end
     btn.__qfxGlassHighlightReady = nil
     btn.__qfxGlassLabelReady = nil
     self:ApplyIndicatorButtonStyle(btn, false)
     self:ClearIndicatorBadge(btn)
     if btn.Label then btn.Label:Hide() end
+    iconWidth = tonumber(iconWidth) or QFX_UTILITY_ICON_SIZE
+    iconHeight = tonumber(iconHeight) or iconWidth
     if btn.Icon then
         btn.Icon:ClearAllPoints()
         btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        btn.Icon:SetSize(QFX_UTILITY_ICON_SIZE, QFX_UTILITY_ICON_SIZE)
+        btn.Icon:SetSize(iconWidth, iconHeight)
         QFXSetTextureOrAtlas(btn.Icon, atlas, fallback)
-        btn.Icon:SetSize(QFX_UTILITY_ICON_SIZE, QFX_UTILITY_ICON_SIZE)
+        btn.Icon:SetSize(iconWidth, iconHeight)
         btn.Icon:SetVertexColor(r or 1, g or 1, b or 1, 1)
         btn.Icon:Show()
     end
     if btn.HighlightIcon then
         btn.HighlightIcon:ClearAllPoints()
         btn.HighlightIcon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        btn.HighlightIcon:SetSize(QFX_UTILITY_ICON_SIZE, QFX_UTILITY_ICON_SIZE)
+        btn.HighlightIcon:SetSize(iconWidth, iconHeight)
         QFXSetTextureOrAtlas(btn.HighlightIcon, highlightAtlas or atlas, highlightFallback or fallback)
-        btn.HighlightIcon:SetSize(QFX_UTILITY_ICON_SIZE, QFX_UTILITY_ICON_SIZE)
+        btn.HighlightIcon:SetSize(iconWidth, iconHeight)
         btn.HighlightIcon:SetVertexColor(1, 1, 1, 1)
     end
     btn.NormalAtlas, btn.NormalFallback = atlas, fallback
     btn.PushedAtlas, btn.PushedFallback = pushedAtlas, pushedFallback
+    btn.IconWidth, btn.IconHeight = iconWidth, iconHeight
     btn:SetSize(QFX_UTILITY_ROW_HEIGHT, QFX_UTILITY_ROW_HEIGHT)
 end
 
@@ -722,8 +933,13 @@ function QMT:ShouldUseUtilityRow()
     -- Bottom utility widgets are anchored to the real Minimap and should exist
     -- whenever the minimap enhancement is enabled. Do not require square mode:
     -- users can keep the same bottom FPS / phase glass panels if they temporarily
-    -- switch the map shape.
-    return self.db and self.db.minimap and self.db.minimap.enabled and Minimap
+    -- switch the map shape. Flight center is intentionally a clean-map mode, so
+    -- the whole utility row is suspended until landing.
+    return self.db
+        and self.db.minimap
+        and self.db.minimap.enabled
+        and Minimap
+        and not (self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive())
 end
 
 function QMT:GetUtilityRow()
@@ -739,48 +955,102 @@ function QMT:GetUtilityRow()
     return row
 end
 
-function QMT:GetNativeCraftingOrderFrame()
+function QMT:GetNativeCraftingOrderFrames()
+    local frames, seen = {}, {}
+    local function Add(frame)
+        if frame and not seen[frame] then
+            seen[frame] = true
+            frames[#frames + 1] = frame
+        end
+    end
+
     local indicator = MinimapCluster and MinimapCluster.IndicatorFrame
-    if indicator and indicator.CraftingOrderFrame then return indicator.CraftingOrderFrame end
-    return _G.CraftingOrderFrame or _G.ProfessionsCustomerOrdersFrame or _G.ProfessionsCustomerOrders_MinimapButton
+    Add(indicator and indicator.CraftingOrderFrame)
+    Add(indicator and indicator.CraftingOrdersFrame)
+    Add(MinimapCluster and MinimapCluster.CraftingOrderFrame)
+    Add(_G.CraftingOrderFrame)
+    Add(_G.ProfessionsCustomerOrdersFrame)
+    Add(_G.ProfessionsCustomerOrders_MinimapButton)
+    return frames
+end
+
+function QMT:GetNativeCraftingOrderFrame()
+    local frames = self:GetNativeCraftingOrderFrames()
+    return frames[1]
+end
+
+function QMT:ShouldSuppressNativeCraftingOrderFrame()
+    if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then return true end
+    local d = self.db and self.db.display or {}
+    return self:ShouldUseUtilityRow()
+        and d.time
+        and Minimap
+end
+
+function QMT:CaptureNativeCraftingOrderFrame(frame)
+    if not frame then return end
+    self.craftingOrderFrameOriginal = self.craftingOrderFrameOriginal or {}
+    if self.craftingOrderFrameOriginal[frame] then return end
+    self.craftingOrderFrameOriginal[frame] = {
+        alpha = frame.GetAlpha and frame:GetAlpha() or 1,
+        mouseEnabled = QFXIsMouseEnabled(frame),
+    }
 end
 
 function QMT:SuppressNativeCraftingOrderFrame()
-    local frame = self:GetNativeCraftingOrderFrame()
-    if not frame then return end
-    self.craftingOrderNativeWantsShow = self.craftingOrderNativeWantsShow or (frame.IsShown and frame:IsShown())
-    if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
-    if frame.Hide then
-        self.suppressingCraftingNative = true
-        SafeCall(frame.Hide, frame)
-        self.suppressingCraftingNative = false
+    for _, frame in ipairs(self:GetNativeCraftingOrderFrames()) do
+        self:CaptureNativeCraftingOrderFrame(frame)
+        if frame.IsShown and frame:IsShown() then self.craftingOrderNativeWantsShow = true end
+        if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
+        if frame.EnableMouse then SafeCall(frame.EnableMouse, frame, false) end
+        if frame.HookScript and not frame.QFXMinimapToolsCraftingHooked then
+            frame:HookScript("OnShow", function(f)
+                QMT.craftingOrderNativeWantsShow = true
+                if QMT:ShouldSuppressNativeCraftingOrderFrame() then
+                    if f.SetAlpha then SafeCall(f.SetAlpha, f, 0) end
+                    if f.EnableMouse then SafeCall(f.EnableMouse, f, false) end
+                end
+                SafeCall(QMT.UpdateTimeStatusIcons, QMT)
+            end)
+            frame:HookScript("OnHide", function()
+                local anyShown = false
+                for _, candidate in ipairs(QMT:GetNativeCraftingOrderFrames()) do
+                    if candidate.IsShown and candidate:IsShown() then
+                        anyShown = true
+                        break
+                    end
+                end
+                QMT.craftingOrderNativeWantsShow = anyShown
+                SafeCall(QMT.UpdateTimeStatusIcons, QMT)
+            end)
+            frame.QFXMinimapToolsCraftingHooked = true
+        end
     end
-    if frame.HookScript and not frame.QFXMinimapToolsCraftingHooked then
-        frame:HookScript("OnShow", function(f)
-            if not QMT:ShouldUseUtilityRow() then return end
-            QMT.craftingOrderNativeWantsShow = true
-            if f.SetAlpha then SafeCall(f.SetAlpha, f, 0) end
-            if f.Hide then
-                QMT.suppressingCraftingNative = true
-                SafeCall(f.Hide, f)
-                QMT.suppressingCraftingNative = false
-            end
-            SafeCall(QMT.UpdateTimeStatusIcons, QMT)
-        end)
-        frame:HookScript("OnHide", function()
-            if QMT.suppressingCraftingNative then return end
-            QMT.craftingOrderNativeWantsShow = false
-            SafeCall(QMT.UpdateTimeStatusIcons, QMT)
-        end)
-        frame.QFXMinimapToolsCraftingHooked = true
+end
+
+function QMT:RestoreNativeCraftingOrderFrame()
+    for frame, original in pairs(self.craftingOrderFrameOriginal or {}) do
+        if frame and original then
+            if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, original.alpha or 1) end
+            if frame.EnableMouse and original.mouseEnabled ~= nil then SafeCall(frame.EnableMouse, frame, original.mouseEnabled) end
+        end
+    end
+    self.craftingOrderNativeWantsShow = false
+    for _, current in ipairs(self:GetNativeCraftingOrderFrames()) do
+        if current.IsShown and current:IsShown() then
+            self.craftingOrderNativeWantsShow = true
+            break
+        end
     end
 end
 
 function QMT:HasCraftingOrderIndicator()
-    local frame = self:GetNativeCraftingOrderFrame()
-    if frame and frame.IsShown and frame:IsShown() then return true end
+    for _, frame in ipairs(self:GetNativeCraftingOrderFrames()) do
+        if frame.IsShown and frame:IsShown() then return true end
+    end
     return self.craftingOrderNativeWantsShow and true or false
 end
+
 
 function QMT:GetUtilitySystemText()
     local fps = math.floor((GetFramerate and GetFramerate() or 0) + 0.5)
@@ -1026,12 +1296,16 @@ function QMT:UpdateUtilityPhaseText(skipLayout)
 end
 
 function QMT:UpdateTimeStatusIcons(skipLayout)
-    self:SuppressNativeCraftingOrderFrame()
-
     local d = self.db and self.db.display or {}
-    local canUse = self:ShouldUseUtilityRow() and Minimap and not (self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive())
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
+    local canUse = self:ShouldUseUtilityRow() and d.time and Minimap and not flightActive
+    if self:ShouldSuppressNativeCraftingOrderFrame() then
+        self:SuppressNativeCraftingOrderFrame()
+    else
+        self:RestoreNativeCraftingOrderFrame()
+    end
     local timeFrame = self.statFrames and self.statFrames.time
-    local canAttachToTime = canUse and d.time and timeFrame and timeFrame.IsShown and timeFrame:IsShown()
+    local canAttachToTime = canUse and timeFrame and timeFrame.IsShown and timeFrame:IsShown()
     local statusLevel = Minimap and Minimap.GetFrameLevel and ((Minimap:GetFrameLevel() or 0) + 43) or 360
 
     local calendar = self:CreateIndicatorButton("calendar")
@@ -1059,10 +1333,10 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
         calendar:SetFrameStrata("HIGH")
         if calendar.SetFrameLevel then calendar:SetFrameLevel(statusLevel) end
         calendar:ClearAllPoints()
-        if canAttachToTime then
+        if timeFrame then
             calendar:SetPoint("RIGHT", timeFrame, "LEFT", -2, 0)
         else
-            calendar:SetPoint("BOTTOM", Minimap, "BOTTOM", 0, 3)
+            calendar:SetPoint("BOTTOM", Minimap, "BOTTOM", -28, 3)
         end
         calendar:Show()
         self:StripIconBackgroundAndBorder(calendar)
@@ -1071,7 +1345,7 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     end
 
     local mail = self:CreateIndicatorButton("mail")
-    local hasMail = canUse and QFXHasNewMail(self)
+    local hasMail = canUse and QFXHasNewMail()
     if hasMail then
         self:ShowIndicatorIcon(
             mail,
@@ -1081,16 +1355,16 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
             "UI-HUD-Minimap-Mail-Mouseover",
             "UI-HUD-Minimap-Mail-Down",
             "Interface\\Minimap\\MiniMap-MailIcon",
-            "Interface\\Minimap\\MiniMap-MailIcon"
+            "Interface\\Minimap\\MiniMap-MailIcon",
+            QFX_UTILITY_MAIL_ICON_SIZE,
+            QFX_UTILITY_MAIL_ICON_SIZE
         )
         mail:SetScript("OnEnter", function(owner)
-            if not QFXShowNativeFrameTooltip(_G.MiniMapMailFrame, owner) then
-                GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-                GameTooltip:AddLine(L.MAIL_PENDING or (QMT.ZH and "有新邮件" or "New mail"))
-                GameTooltip:Show()
-            end
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(L.MAIL_PENDING or (QMT.ZH and "有新邮件" or "New mail"))
+            GameTooltip:Show()
         end)
-        mail:SetScript("OnClick", function(_, button) QFXClickNativeFrame(_G.MiniMapMailFrame, button) end)
+        mail:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeMailFrame(), button) end)
     else
         mail:Hide()
     end
@@ -1106,32 +1380,31 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
             "UI-HUD-Minimap-CraftingOrder-Over-2x",
             "UI-HUD-Minimap-CraftingOrder-Down-2x",
             "Interface\\Icons\\INV_Inscription_Tradeskill01",
-            "Interface\\Icons\\INV_Inscription_Tradeskill01"
+            "Interface\\Icons\\INV_Inscription_Tradeskill01",
+            QFX_UTILITY_CRAFTING_ICON_SIZE,
+            QFX_UTILITY_CRAFTING_ICON_SIZE
         )
         crafting:SetScript("OnEnter", function(owner)
-            local native = QMT:GetNativeCraftingOrderFrame()
-            if not QFXShowNativeFrameTooltip(native, owner) then
-                GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-                GameTooltip:AddLine(QMT.ZH and "制造订单" or "Crafting Orders")
-                local info = C_CraftingOrders and C_CraftingOrders.GetPersonalOrdersInfo and SafeCall(C_CraftingOrders.GetPersonalOrdersInfo)
-                if type(info) == "table" then
-                    for _, order in pairs(info) do
-                        local name = order.professionName or order.name
-                        local count = order.numPersonalOrders or order.numOrders
-                        if name and count then GameTooltip:AddDoubleLine(tostring(name), tostring(count), 1, 1, 1, 1, 1, 1) end
-                    end
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(QMT.ZH and "制造订单" or "Crafting Orders")
+            local info = C_CraftingOrders and C_CraftingOrders.GetPersonalOrdersInfo and SafeCall(C_CraftingOrders.GetPersonalOrdersInfo)
+            if type(info) == "table" then
+                for _, order in pairs(info) do
+                    local name = order.professionName or order.name
+                    local count = order.numPersonalOrders or order.numOrders
+                    if name and count then GameTooltip:AddDoubleLine(tostring(name), tostring(count), 1, 1, 1, 1, 1, 1) end
                 end
-                GameTooltip:Show()
             end
+            GameTooltip:Show()
         end)
         crafting:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeCraftingOrderFrame(), button) end)
     else
         crafting:Hide()
     end
 
-    local statusAnchor = canAttachToTime and timeFrame or (calendar and calendar.IsShown and calendar:IsShown() and calendar or nil)
+    local statusAnchor = timeFrame
     local function AttachStatusIcon(icon)
-        if not icon or not canUse or not statusAnchor then
+        if not icon or not canAttachToTime or not statusAnchor then
             if icon then icon:Hide() end
             return
         end
@@ -1215,6 +1488,11 @@ function QMT:UpdateUtilityRow()
         if row then row:Hide() end
         if self.utilityTextFrames then for _, frame in pairs(self.utilityTextFrames) do if frame and frame.Hide then frame:Hide() end end end
         if self.indicatorButtons then for _, btn in pairs(self.indicatorButtons) do if btn and btn.Hide then btn:Hide() end end end
+        if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
+            SafeCall(self.SuppressNativeCraftingOrderFrame, self)
+        else
+            SafeCall(self.RestoreNativeCraftingOrderFrame, self)
+        end
         return
     end
 
@@ -1247,11 +1525,14 @@ function QMT:CaptureNativeTrackingFrame()
     if not tracking or self.trackingFrameOriginal then return end
     self.trackingFrameOriginal = {
         parent = tracking.GetParent and tracking:GetParent(),
-        point = {tracking:GetPoint(1)},
+        points = QFXCapturePoints(tracking),
         scale = tracking.GetScale and tracking:GetScale() or 1,
         width = tracking.GetWidth and tracking:GetWidth(),
         height = tracking.GetHeight and tracking:GetHeight(),
         alpha = tracking.GetAlpha and tracking:GetAlpha() or 1,
+        frameStrata = tracking.GetFrameStrata and tracking:GetFrameStrata() or nil,
+        frameLevel = tracking.GetFrameLevel and tracking:GetFrameLevel() or nil,
+        mouseEnabled = QFXIsMouseEnabled(tracking),
     }
 end
 
@@ -1346,16 +1627,17 @@ function QMT:RestoreNativeTrackingFrame()
     end
 
     SafeCall(tracking.SetParent, tracking, original.parent or MinimapCluster or Minimap)
-    SafeCall(tracking.ClearAllPoints, tracking)
-    if original.point and original.point[1] then
-        SafeCall(tracking.SetPoint, tracking, unpack(original.point))
-    end
+    QFXRestorePoints(tracking, original.points)
     if original.scale then SafeCall(tracking.SetScale, tracking, original.scale) end
     if original.width and original.height and tracking.SetSize then
         SafeCall(tracking.SetSize, tracking, original.width, original.height)
     end
     if tracking.SetAlpha then SafeCall(tracking.SetAlpha, tracking, original.alpha or 1) end
+    if tracking.SetFrameStrata and original.frameStrata then SafeCall(tracking.SetFrameStrata, tracking, original.frameStrata) end
+    if tracking.SetFrameLevel and original.frameLevel then SafeCall(tracking.SetFrameLevel, tracking, original.frameLevel) end
+    if tracking.EnableMouse and original.mouseEnabled ~= nil then SafeCall(tracking.EnableMouse, tracking, original.mouseEnabled) end
     self:RestoreNativeTrackingOuterBorder()
+    self:RestoreIconBackgroundAndBorder(tracking)
 end
 
 function QMT:GetNativeTrackingButton()
@@ -1367,13 +1649,8 @@ end
 function QMT:OpenNativeTrackingMenu(owner)
     local blizBtn = self:GetNativeTrackingButton()
     if not blizBtn then return end
-    if owner then
-        SafeCall(blizBtn.SetParent, blizBtn, Minimap or owner)
-        SafeCall(blizBtn.ClearAllPoints, blizBtn)
-        SafeCall(blizBtn.SetPoint, blizBtn, "CENTER", owner, "CENTER", 0, 0)
-        if blizBtn.SetAlpha then SafeCall(blizBtn.SetAlpha, blizBtn, 0) end
-        if blizBtn.EnableMouse then SafeCall(blizBtn.EnableMouse, blizBtn, false) end
-    end
+    -- Open the Blizzard menu directly. Never reparent or re-anchor the native
+    -- tracking button just to invoke its click handler.
     if blizBtn.OpenMenu then
         SafeCall(blizBtn.OpenMenu, blizBtn)
     else
@@ -1398,17 +1675,21 @@ end
 
 function QMT:ApplyTrackingButtonPosition()
     local tracking = self:GetNativeTrackingFrame()
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local useCorner = self:ShouldUseNativeTrackingCorner()
     local indicator = useCorner and self:GetTrackingIndicator() or self.indicatorButtons and self.indicatorButtons.tracking
 
     if not useCorner then
         if indicator then indicator:Hide() end
+        if tracking and not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, false) end
         self:RestoreNativeTrackingFrame()
+        if tracking and flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, true) end
         return
     end
 
     if tracking then
         self:CaptureNativeTrackingFrame()
+        if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, false) end
         SafeCall(tracking.SetParent, tracking, Minimap)
         SafeCall(tracking.ClearAllPoints, tracking)
         SafeCall(tracking.SetPoint, tracking, "TOPRIGHT", Minimap, "TOPRIGHT", 4, 4)
@@ -1418,14 +1699,16 @@ function QMT:ApplyTrackingButtonPosition()
         end
         if tracking.SetAlpha then SafeCall(tracking.SetAlpha, tracking, 0) end
         if tracking.EnableMouse then SafeCall(tracking.EnableMouse, tracking, false) end
-        if tracking.Show then SafeCall(tracking.Show, tracking) end
         self:HideNativeTrackingOuterBorder()
         self:StripIconBackgroundAndBorder(tracking)
+        if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, true) end
 
         if tracking.HookScript and not tracking.QFXMinimapToolsTrackingCornerHooked then
             tracking:HookScript("OnShow", function()
                 if QMT:ShouldUseNativeTrackingCorner() then
                     SafeCall(QMT.ApplyTrackingButtonPosition, QMT)
+                elseif QMT.IsOutdoorFlightCenterActive and QMT:IsOutdoorFlightCenterActive() then
+                    SafeCall(QMT.SetFrameFlightSuppressed, QMT, tracking, true)
                 end
             end)
             tracking.QFXMinimapToolsTrackingCornerHooked = true
@@ -1437,7 +1720,7 @@ function QMT:ApplyTrackingButtonPosition()
         indicator:ClearAllPoints()
         indicator:SetPoint("TOPRIGHT", Minimap, "TOPRIGHT", 4, 4)
         indicator:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 42)
-        indicator:Show()
+        indicator:SetShown(not flightActive)
         self:StripIconBackgroundAndBorder(indicator)
     end
 end
@@ -1468,34 +1751,38 @@ function QMT:CaptureNativeDifficultyFrame(frame)
     if self.difficultyFrameOriginal[frame] then return end
     self.difficultyFrameOriginal[frame] = {
         parent = frame.GetParent and frame:GetParent(),
-        point = {frame:GetPoint(1)},
+        points = QFXCapturePoints(frame),
         scale = frame.GetScale and frame:GetScale() or 1,
         alpha = frame.GetAlpha and frame:GetAlpha() or 1,
-        shown = frame.IsShown and frame:IsShown() or false,
+        frameStrata = frame.GetFrameStrata and frame:GetFrameStrata() or nil,
+        frameLevel = frame.GetFrameLevel and frame:GetFrameLevel() or nil,
+        mouseEnabled = QFXIsMouseEnabled(frame),
     }
 end
 
 local function QFXRestoreNativeDifficultyFrame(frame, original)
     if not frame or not original then return end
     SafeCall(frame.SetParent, frame, original.parent or MinimapCluster or Minimap)
-    SafeCall(frame.ClearAllPoints, frame)
-    if original.point and original.point[1] then SafeCall(frame.SetPoint, frame, unpack(original.point)) end
+    QFXRestorePoints(frame, original.points)
     if original.scale and frame.SetScale then SafeCall(frame.SetScale, frame, original.scale) end
     if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, original.alpha or 1) end
-    if original.shown then
-        if frame.Show then SafeCall(frame.Show, frame) end
-    else
-        if frame.Hide then SafeCall(frame.Hide, frame) end
-    end
+    if frame.SetFrameStrata and original.frameStrata then SafeCall(frame.SetFrameStrata, frame, original.frameStrata) end
+    if frame.SetFrameLevel and original.frameLevel then SafeCall(frame.SetFrameLevel, frame, original.frameLevel) end
+    if frame.EnableMouse and original.mouseEnabled ~= nil then SafeCall(frame.EnableMouse, frame, original.mouseEnabled) end
+    if QMT.RestoreIconBackgroundAndBorder then QMT:RestoreIconBackgroundAndBorder(frame) end
+    -- Blizzard owns current difficulty visibility; do not restore a stale snapshot.
 end
 
 function QMT:ApplyDifficultyFramePosition()
     local frames = self:GetNativeDifficultyFrames()
     if not frames or #frames == 0 then return end
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
 
     if not self:ShouldUseNativeDifficultyFrame() then
         for _, frame in ipairs(frames) do
+            if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, false) end
             QFXRestoreNativeDifficultyFrame(frame, self.difficultyFrameOriginal and self.difficultyFrameOriginal[frame])
+            if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, true) end
         end
         return
     end
@@ -1503,6 +1790,7 @@ function QMT:ApplyDifficultyFramePosition()
     local index = 0
     for _, frame in ipairs(frames) do
         self:CaptureNativeDifficultyFrame(frame)
+        if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, false) end
         index = index + 1
         SafeCall(frame.SetParent, frame, Minimap)
         SafeCall(frame.ClearAllPoints, frame)
@@ -1512,6 +1800,7 @@ function QMT:ApplyDifficultyFramePosition()
         if frame.SetFrameStrata then SafeCall(frame.SetFrameStrata, frame, "HIGH") end
         if frame.SetFrameLevel and Minimap.GetFrameLevel then SafeCall(frame.SetFrameLevel, frame, (Minimap:GetFrameLevel() or 0) + 40) end
         self:StripIconBackgroundAndBorder(frame)
+        if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, true) end
         -- Do not force Show(); Blizzard decides when a difficulty badge is relevant.
         if frame.HookScript and not frame.QFXMinimapToolsDifficultyHooked then
             frame:HookScript("OnShow", function() SafeCall(QMT.ApplyDifficultyFramePosition, QMT) end)
@@ -1524,10 +1813,12 @@ function QMT:CaptureExpansionLandingPageButton(btn)
     if not btn or self.expansionLandingButtonOriginal then return end
     self.expansionLandingButtonOriginal = {
         parent = btn.GetParent and btn:GetParent(),
-        point = {btn:GetPoint(1)},
+        points = QFXCapturePoints(btn),
         scale = btn.GetScale and btn:GetScale() or 1,
         alpha = btn.GetAlpha and btn:GetAlpha() or 1,
-        shown = btn.IsShown and btn:IsShown() or false,
+        frameStrata = btn.GetFrameStrata and btn:GetFrameStrata() or nil,
+        frameLevel = btn.GetFrameLevel and btn:GetFrameLevel() or nil,
+        mouseEnabled = QFXIsMouseEnabled(btn),
     }
 end
 
@@ -1536,34 +1827,41 @@ function QMT:RestoreExpansionLandingPageButton()
     local original = self.expansionLandingButtonOriginal
     if not btn or not original then return end
     SafeCall(btn.SetParent, btn, original.parent or MinimapCluster or Minimap)
-    SafeCall(btn.ClearAllPoints, btn)
-    if original.point and original.point[1] then SafeCall(btn.SetPoint, btn, unpack(original.point)) end
+    QFXRestorePoints(btn, original.points)
     if btn.SetScale then SafeCall(btn.SetScale, btn, original.scale or 1) end
     if btn.SetAlpha then SafeCall(btn.SetAlpha, btn, original.alpha or 1) end
-    if original.shown then
-        if btn.Show then SafeCall(btn.Show, btn) end
-    else
-        if btn.Hide then SafeCall(btn.Hide, btn) end
-    end
+    if btn.SetFrameStrata and original.frameStrata then SafeCall(btn.SetFrameStrata, btn, original.frameStrata) end
+    if btn.SetFrameLevel and original.frameLevel then SafeCall(btn.SetFrameLevel, btn, original.frameLevel) end
+    if btn.EnableMouse and original.mouseEnabled ~= nil then SafeCall(btn.EnableMouse, btn, original.mouseEnabled) end
+    self:RestoreIconBackgroundAndBorder(btn)
+    -- Blizzard owns current feature visibility; do not restore a stale snapshot.
 end
 
 function QMT:ApplyExpansionLandingPageButtonPosition()
     local btn = _G.ExpansionLandingPageMinimapButton
     if not btn or not Minimap then return end
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     if not self:ShouldCleanSquareMinimap() then
+        if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, false) end
         self:RestoreExpansionLandingPageButton()
+        if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, true) end
         return
     end
 
     self:CaptureExpansionLandingPageButton(btn)
+    if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, false) end
     SafeCall(btn.SetParent, btn, Minimap)
     SafeCall(btn.ClearAllPoints, btn)
+    -- Retail 12.0.7 uses ExpansionLandingPageMinimapButton as the new
+    -- minimap attachment / talent-rune entry. Keep it separate from the
+    -- queue eye and place it in the lower-left corner.
     SafeCall(btn.SetPoint, btn, "BOTTOMLEFT", Minimap, "BOTTOMLEFT", 2, 2)
     if btn.SetScale then SafeCall(btn.SetScale, btn, 0.75) end
     if btn.SetAlpha then SafeCall(btn.SetAlpha, btn, 1) end
     if btn.SetFrameStrata then SafeCall(btn.SetFrameStrata, btn, "HIGH") end
     if btn.SetFrameLevel and Minimap.GetFrameLevel then SafeCall(btn.SetFrameLevel, btn, (Minimap:GetFrameLevel() or 0) + 41) end
     self:StripIconBackgroundAndBorder(btn)
+    if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, true) end
     -- Do not force Show(); Blizzard controls unlock/visibility for the current expansion feature.
     if btn.HookScript and not btn.QFXMinimapToolsLandingHooked then
         btn:HookScript("OnShow", function() SafeCall(QMT.ApplyExpansionLandingPageButtonPosition, QMT) end)
@@ -1629,49 +1927,79 @@ function QMT:StartMoveMinimap()
     self.minimapDragOffsetX = (mapX or cursorX) - cursorX
     self.minimapDragOffsetY = (mapY or cursorY) - cursorY
     self.db.minimap.autoSnap = false
-    self.squareBorder:SetScript("OnUpdate", function()
+    local mover = self.minimapMover or self.squareBorder
+    if not mover then return end
+    mover:SetScript("OnUpdate", function()
         local s = UIParent:GetEffectiveScale() or 1
         local x, y = GetCursorPosition()
         x, y = x / s, y / s
+        -- Attached frames are already anchored to Minimap and follow it naturally.
+        -- During drag, only move the map; perform one consolidated refresh on stop.
         Minimap:ClearAllPoints()
         Minimap:SetPoint("CENTER", UIParent, "BOTTOMLEFT", x + (QMT.minimapDragOffsetX or 0), y + (QMT.minimapDragOffsetY or 0))
-        QMT:UpdateSquareBorderPosition()
-        QMT:ApplyQueueStatusButtonPosition()
-        QMT:ApplyMailFramePosition()
-        QMT:ApplyTrackingButtonPosition()
-        QMT:ApplyDifficultyFramePosition()
-        QMT:ApplyExpansionLandingPageButtonPosition()
-        QMT:UpdateUtilityRow()
-        QMT:PlaceBagButton()
-        if QMT.statFrames then for key in pairs(QMT.statFrames) do QMT:PlaceStatFrame(key) end end
-        if QMT.bagFrame and QMT.bagFrame:IsShown() then QMT:LayoutBag() end
     end)
 end
 
 function QMT:StopMoveMinimap()
-    if self.squareBorder then self.squareBorder:SetScript("OnUpdate", nil) end
+    local mover = self.minimapMover or self.squareBorder
+    if mover then mover:SetScript("OnUpdate", nil) end
     self:SaveManualMinimapPosition()
     self:ApplyManualMinimapPosition()
+    self:RequestAttachedElementRefresh(true, true)
+end
+
+function QMT:EnsureMinimapMover()
+    if self.minimapMover or not Minimap then return self.minimapMover end
+    local mover = CreateFrame("Frame", "QFXMinimapToolsMover", Minimap)
+    mover:SetAllPoints(Minimap)
+    mover:SetHitRectInsets(-4, -4, -4, -4)
+    mover:SetFrameStrata(Minimap:GetFrameStrata() or "MEDIUM")
+    mover:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 50)
+    mover:EnableMouse(false)
+    mover:SetMovable(false)
+    mover:Hide()
+    self.minimapMover = mover
+    return mover
 end
 
 function QMT:ApplyMinimapMoveMode()
-    if not self.squareBorder or not self.db or not self.db.minimap then return end
-    local unlocked = not self.db.minimap.locked
-    self.squareBorder:EnableMouse(unlocked)
-    self.squareBorder:SetMovable(unlocked)
+    if not self.db or not self.db.minimap then return end
+    local mover = self:EnsureMinimapMover()
+    if not mover then return end
+    local unlocked = self.db.minimap.enabled and not self.db.minimap.locked and not self.flightModeActive
+
+    mover:SetFrameStrata(Minimap:GetFrameStrata() or "MEDIUM")
+    mover:SetFrameLevel((Minimap:GetFrameLevel() or 1) + 50)
+    mover:EnableMouse(unlocked)
+    mover:SetMovable(unlocked)
+    mover:SetShown(unlocked)
+
     if unlocked then
-        self.squareBorder:RegisterForDrag("LeftButton")
-        self.squareBorder:SetScript("OnDragStart", function() QMT:StartMoveMinimap() end)
-        self.squareBorder:SetScript("OnDragStop", function() QMT:StopMoveMinimap() end)
-        self.squareBorder:SetScript("OnMouseUp", function(_, button) if button == "LeftButton" then QMT:StopMoveMinimap() end end)
-        self.squareBorder:SetScript("OnEnter", function(self)
+        mover:RegisterForDrag("LeftButton")
+        mover:SetScript("OnDragStart", function() QMT:StartMoveMinimap() end)
+        mover:SetScript("OnDragStop", function() QMT:StopMoveMinimap() end)
+        mover:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
             GameTooltip:AddLine(L.UNLOCK_MOVE_TIP)
             GameTooltip:Show()
         end)
-        self.squareBorder:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        mover:SetScript("OnLeave", function() GameTooltip:Hide() end)
     else
+        mover:RegisterForDrag()
+        mover:SetScript("OnUpdate", nil)
+        mover:SetScript("OnDragStart", nil)
+        mover:SetScript("OnDragStop", nil)
+        mover:SetScript("OnEnter", nil)
+        mover:SetScript("OnLeave", nil)
+    end
+
+    -- The border is decorative only. Keeping mouse disabled prevents the low
+    -- border layer from competing with the dedicated mover for drag events.
+    if self.squareBorder then
+        self.squareBorder:EnableMouse(false)
+        self.squareBorder:SetMovable(false)
         self.squareBorder:RegisterForDrag()
+        self.squareBorder:SetScript("OnUpdate", nil)
         self.squareBorder:SetScript("OnDragStart", nil)
         self.squareBorder:SetScript("OnDragStop", nil)
         self.squareBorder:SetScript("OnMouseUp", nil)
@@ -1988,9 +2316,8 @@ function QMT:ApplyNativeControlSkin()
     local style = self.GetBorderStyle and self:GetBorderStyle() or {r = 0.18, g = 0.18, b = 0.18, a = 1}
     local color = {style.r or 0.18, style.g or 0.18, style.b or 0.18, style.a or 1}
 
-    local q = self:GetManagedNativeQueueFrame()
-    if q then
-        -- Queue eye stays as a pure eye glyph in the lower-left corner; do not add
+    for _, q in ipairs(self.GetNativeQueueFrames and self:GetNativeQueueFrames() or {}) do
+        -- Queue eye stays as a pure eye glyph in the lower-right corner; do not add
         -- a QFX round button frame around it.
         ApplyRoundMinimapButtonBorder(q, color, false, false)
     end
@@ -2209,6 +2536,7 @@ end
 function QMT:ApplyMinimapSettings()
     local db = self.db.minimap
     if not Minimap or not MinimapCluster then return end
+    self:CaptureOriginalMinimapState()
 
     if not self.originalGetMinimapShape then
         self.originalGetMinimapShape = _G.GetMinimapShape
@@ -2239,14 +2567,10 @@ function QMT:ApplyMinimapSettings()
             self:SetNativeMinimapControlsHidden(false)
         end
     else
-        MinimapCluster:SetScale(1)
-        if Minimap.SetScale then Minimap:SetScale(1) end
-        MinimapCluster:SetClampedToScreen(false)
-        SafeCall(Minimap.SetClampedToScreen, Minimap, false)
         _G.GetMinimapShape = self.originalGetMinimapShape or _G.GetMinimapShape
-        SafeCall(Minimap.SetMaskTexture, Minimap, "Interface\\CHARACTERFRAME\\TempPortraitAlphaMask")
         self:SetRoundMinimapArtHidden(false)
         self:SetNativeMinimapControlsHidden(false)
+        self:RestoreOriginalMinimapState()
     end
 
     if not self.squareBorder then
@@ -2273,16 +2597,21 @@ function QMT:ApplyMinimapSettings()
     self:ApplyExpansionLandingPageButtonPosition()
     self:UpdateUtilityRow()
     if self.ApplyNativeControlSkin then self:ApplyNativeControlSkin() end
-    if db.autoSnap then self:ApplySmartTopRightSnap() else self:ApplyManualMinimapPosition() end
+    if db.enabled then
+        if db.autoSnap then self:ApplySmartTopRightSnap() else self:ApplyManualMinimapPosition() end
+    end
 
     if AddonCompartmentFrame then
         if not self.compartmentHooked then
             AddonCompartmentFrame:HookScript("OnShow", function(frame)
-                if QMT.db and QMT.db.minimap and (QMT.db.minimap.hideCompartment or QMT:ShouldCleanSquareMinimap()) then frame:Hide() end
+                local minimapDB = QMT.db and QMT.db.minimap
+                if minimapDB and minimapDB.enabled and (minimapDB.hideCompartment or QMT:ShouldCleanSquareMinimap()) then frame:Hide() end
             end)
             self.compartmentHooked = true
         end
-        if db.hideCompartment or self:ShouldCleanSquareMinimap() then AddonCompartmentFrame:Hide() else AddonCompartmentFrame:Show() end
+        if db.enabled then
+            if db.hideCompartment or self:ShouldCleanSquareMinimap() then AddonCompartmentFrame:Hide() else AddonCompartmentFrame:Show() end
+        end
     end
 
     self:RefreshOutdoorFlightWatcher()

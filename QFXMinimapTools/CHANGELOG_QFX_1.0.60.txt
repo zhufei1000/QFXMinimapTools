@@ -1,0 +1,26 @@
+QFXMinimapTools 1.0.60
+
+Stability and compatibility
+- Removed all automatic login/reload changes to WoW's global addon CPU profiler. The Advanced control now reads the live state and only changes it after an explicit user click.
+- Added complete restore handling for managed Blizzard queue, tracking, difficulty, expansion landing-page, and crafting-order controls.
+- Restores parent, all anchor points, scale, size, alpha, frame strata/level, mouse state, and removable decorative layers where applicable.
+- Native Blizzard visibility is no longer restored from stale login snapshots; Blizzard remains responsible for whether dynamic controls are currently shown.
+- Opening the tracking menu no longer reparents or reanchors Blizzard's tracking button.
+- Disabling the minimap enhancement restores the captured original minimap/cluster scale, anchors, clamp state, alpha, layer state, and mask instead of forcing hard-coded defaults.
+
+Performance
+- Merged flight detection into one adaptive watcher; event bursts now extend a probe window instead of starting a second OnUpdate loop.
+- Cached Herbalism/Mining detection and refreshes it only when profession data changes or flight options are committed.
+- Registered UNIT_AURA specifically for the player while flight-center monitoring is enabled.
+- Minimap dragging now only moves the Minimap frame each render frame; attached controls receive one consolidated refresh when dragging stops.
+
+Button bag
+- Added deferred restore/rescan/layout work after combat so changing bag settings in combat no longer leaves collected buttons trapped in a hidden frame.
+- Removed overlapping negative hit rectangles from collected buttons; the 30x30 cells remain easy to click without stealing neighboring clicks.
+- Collected buttons are no longer forcibly shown. Their owner addon's OnShow/OnHide state is respected and the bag layout updates on visibility changes.
+- Restores original frame strata, frame level, parent-scale behavior, mouse state, all anchor points, size, and hit rectangle.
+
+Other
+- Prevented edit boxes from committing twice when Enter clears focus.
+- Limited Blizzard Settings registration retries to ten attempts.
+- Added optional one-time SafeCall diagnostics when QFXMinimapTools.DEBUG is enabled.

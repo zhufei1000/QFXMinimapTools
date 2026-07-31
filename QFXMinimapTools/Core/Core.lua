@@ -30,11 +30,8 @@ function QMT:Initialize()
     self:ApplyAll()
     self:RefreshOutdoorFlightWatcher()
     self:UpdateOutdoorFlightCenterState(true)
-    self:ApplyCPUProfilerSetting("login")
-    if C_Timer then
-        C_Timer.After(1, function() SafeCall(QMT.ApplyCPUProfilerSetting, QMT, "delayed") end)
-        C_Timer.After(5, function() SafeCall(QMT.ApplyCPUProfilerSetting, QMT, "delayed") end)
-    end
+    -- Never change the client's global CPU profiling state automatically. The
+    -- diagnostic control in Advanced only acts after an explicit user click.
     self:RegisterSettingsCategory()
 
     if not self.eventFrame then
@@ -54,10 +51,15 @@ function QMT:Initialize()
         self.eventFrame:RegisterEvent("CALENDAR_UPDATE_PENDING_INVITES")
         self.eventFrame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
         self.eventFrame:RegisterEvent("CVAR_UPDATE")
+        self.eventFrame:RegisterEvent("SKILL_LINES_CHANGED")
+        -- Button-bag restore/rescan work must always complete after combat, even
+        -- when the optional flight-center feature is disabled.
+        self.eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
         self.eventFrame:SetScript("OnEvent", function(_, event, ...)
             if not QMT.db then return end
 
             if event == "SKILL_LINES_CHANGED" then
+                SafeCall(QMT.RefreshGatheringProfessionCache, QMT)
                 SafeCall(QMT.RefreshGatheringProfessionStatus, QMT)
                 SafeCall(QMT.RefreshOutdoorFlightWatcher, QMT)
                 SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
@@ -79,6 +81,9 @@ function QMT:Initialize()
                 or event == "PLAYER_CONTROL_GAINED"
                 or event == "PLAYER_CONTROL_LOST"
                 or event == "PLAYER_REGEN_ENABLED" then
+                if event == "PLAYER_REGEN_ENABLED" then
+                    SafeCall(QMT.ProcessPendingBagOperations, QMT)
+                end
                 SafeCall(QMT.RequestOutdoorFlightProbe, QMT, 8.0)
                 SafeCall(QMT.RefreshOutdoorFlightWatcher, QMT)
                 SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
@@ -115,7 +120,6 @@ function QMT:Initialize()
             end
 
             if event == "UPDATE_PENDING_MAIL" or event == "MAIL_INBOX_UPDATE" or event == "MAIL_CLOSED" then
-                if event == "MAIL_CLOSED" then QMT.mailNativeWantsShow = false end
                 SafeCall(QMT.ApplyMailFramePosition, QMT)
                 SafeCall(QMT.UpdateTimeStatusIcons, QMT)
                 return

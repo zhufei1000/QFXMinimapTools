@@ -1,0 +1,10 @@
+QFXMinimapTools 1.0.61
+
+Mail and crafting-order indicators
+- Fixed the duplicate mail indicator by suppressing the active retail MailFrame under MinimapCluster.IndicatorFrame in addition to legacy mail-frame aliases.
+- Native mail indicators are now suppressed with alpha/mouse-state handling instead of force-hiding them, so Blizzard can continue to own their visibility state.
+- Added alpha and mouse-state restoration for every detected native mail-frame alias without overwriting Blizzard/Edit Mode anchors or sizes.
+- Mail clicks now target the active native mail frame instead of relying only on the legacy MiniMapMailFrame global.
+- Checked crafting-order handling and expanded it to suppress/restore all known native crafting-order frame aliases, preventing the same duplicate-indicator issue.
+- Reduced the visual size of the custom mail and crafting-order textures to 18x18 while retaining 22x22 click areas, matching the calendar icon more closely.
+- Mail suppression now follows the actual bottom time/status row state, including round minimap mode and outdoor flight-center transitions.

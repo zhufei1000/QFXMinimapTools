@@ -78,6 +78,39 @@ local function FrameName(frame)
     return frame and frame.GetName and frame:GetName() or nil
 end
 
+local function CapturePoints(frame)
+    local points = {}
+    if not frame or not frame.GetNumPoints or not frame.GetPoint then return points end
+    local count = frame:GetNumPoints() or 0
+    for i = 1, count do
+        points[#points + 1] = {frame:GetPoint(i)}
+    end
+    return points
+end
+
+local function RestorePoints(frame, points, fallbackParent)
+    if not frame or not frame.ClearAllPoints or not frame.SetPoint then return end
+    frame:ClearAllPoints()
+    local restored = false
+    for _, point in ipairs(points or {}) do
+        if point and point[1] then
+            SafeCall(frame.SetPoint, frame, unpack(point))
+            restored = true
+        end
+    end
+    if not restored and fallbackParent then
+        SafeCall(frame.SetPoint, frame, "CENTER", fallbackParent, "CENTER", 0, 0)
+    end
+end
+
+local function IsMouseEnabled(frame)
+    if frame and frame.IsMouseEnabled then
+        local enabled = SafeCall(frame.IsMouseEnabled, frame)
+        if enabled ~= nil then return enabled and true or false end
+    end
+    return nil
+end
+
 function QMT:LooksLikeMinimapButton(frame)
     if type(frame) ~= "table" or not frame.GetName or not frame.IsObjectType then return false end
     if frame.IsForbidden and frame:IsForbidden() then return false end
@@ -125,11 +158,11 @@ function QMT:MakeCollectedButtonEasyToMouse(button)
         SafeCall(button.SetSize, button, math.max(w, minSize), math.max(h, minSize))
     end
     if button.SetHitRectInsets then
-        -- Some addon buttons use a small clickable sub-region. Expanding the hit rect
-        -- makes hovering/clicking feel like the reference bag: move onto the icon and it works.
-        SafeCall(button.SetHitRectInsets, button, -8, -8, -8, -8)
+        -- The 30x30 cell already provides a comfortable target. Do not expand into
+        -- adjacent cells, which can make neighboring buttons steal each other's clicks.
+        SafeCall(button.SetHitRectInsets, button, 0, 0, 0, 0)
     end
-    if button.EnableMouse then button:EnableMouse(true) end
+    if button.EnableMouse then SafeCall(button.EnableMouse, button, true) end
 end
 
 local function ForwardCollectedButtonScript(cell, scriptName, ...)
@@ -181,6 +214,22 @@ function QMT:HideUnusedButtonCells(active)
             cell:Hide()
         end
     end
+end
+
+function QMT:RequestBagLayout()
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingBagLayout = true
+        return
+    end
+    if self.bagLayoutQueued then return end
+    self.bagLayoutQueued = true
+    local function Flush()
+        QMT.bagLayoutQueued = false
+        if QMT.db and QMT.db.bag and QMT.db.bag.enabled and QMT.bagFrame and QMT.bagFrame:IsShown() then
+            SafeCall(QMT.LayoutBag, QMT)
+        end
+    end
+    if C_Timer and C_Timer.After then C_Timer.After(0, Flush) else Flush() end
 end
 
 function QMT:CreateBagFrames()
@@ -240,6 +289,7 @@ end
 function QMT:PlaceBagButton()
     if not self.bagButton or not Minimap then return end
     local db = self.db.bag
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     -- Fixed Q trigger: always left-middle on the square minimap border.
     -- This avoids saved drag offsets placing the bag trigger in odd locations.
     db.mainButtonEdge = "LEFT"
@@ -247,7 +297,8 @@ function QMT:PlaceBagButton()
     db.mainButtonOffsetY = 0
     self.bagButton:ClearAllPoints()
     self.bagButton:SetPoint("CENTER", Minimap, "LEFT", -1, 0)
-    self.bagButton:SetShown(db.enabled)
+    self.bagButton:SetShown(db.enabled and not flightActive)
+    if flightActive and self.bagFrame then self.bagFrame:Hide() end
 end
 
 
@@ -279,23 +330,36 @@ function QMT:CollectButton(button)
     local hitInfo = SaveButtonHitInfo(button)
     self.originalButtons[button] = {
         parent = button:GetParent(),
-        point = {button:GetPoint(1)},
-        scale = button:GetScale(),
+        points = CapturePoints(button),
+        scale = button.GetScale and button:GetScale() or 1,
         shown = button.IsShown and button:IsShown(),
         width = hitInfo and hitInfo.width,
         height = hitInfo and hitInfo.height,
         hitInsets = hitInfo and hitInfo.hitInsets,
+        frameStrata = button.GetFrameStrata and button:GetFrameStrata() or nil,
+        frameLevel = button.GetFrameLevel and button:GetFrameLevel() or nil,
+        ignoreParentScale = button.IsIgnoringParentScale and SafeCall(button.IsIgnoringParentScale, button) or nil,
+        mouseEnabled = IsMouseEnabled(button),
     }
     button:SetParent(self.bagFrame)
     button:SetFrameStrata(BAG_FRAME_STRATA)
     if button.SetFrameLevel then button:SetFrameLevel((self.bagFrame:GetFrameLevel() or BAG_FRAME_LEVEL) + 1) end
-    button:SetIgnoreParentScale(false)
+    if button.SetIgnoreParentScale then SafeCall(button.SetIgnoreParentScale, button, false) end
     button:SetScale(self.db.bag.buttonScale)
     self:MakeCollectedButtonEasyToMouse(button)
-    if button.Show then button:Show() end
     button:ClearAllPoints()
     self.collectedMap[button] = true
     table.insert(self.collectedButtons, button)
+
+    if button.HookScript and not button.QFXMinimapToolsVisibilityHooked then
+        button:HookScript("OnShow", function(btn)
+            if QMT.collectedMap and QMT.collectedMap[btn] then QMT:RequestBagLayout() end
+        end)
+        button:HookScript("OnHide", function(btn)
+            if QMT.collectedMap and QMT.collectedMap[btn] then QMT:RequestBagLayout() end
+        end)
+        button.QFXMinimapToolsVisibilityHooked = true
+    end
     return true
 end
 
@@ -334,7 +398,10 @@ function QMT:ScanMinimapChildren()
 end
 
 function QMT:RescanButtons(force)
-    if InCombatLockdown and InCombatLockdown() then return end
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingBagRescan = true
+        return
+    end
     if not self.db.bag.enabled or not self.bagFrame then return end
     if not force and self.rescanQueued then return end
     if not force and C_Timer and C_Timer.After then
@@ -357,14 +424,22 @@ function QMT:RescanButtons(force)
 end
 
 function QMT:LayoutBag()
-    if InCombatLockdown and InCombatLockdown() then return end
+    if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
+        if self.bagFrame then self.bagFrame:Hide() end
+        return
+    end
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingBagLayout = true
+        return
+    end
     if not self.bagFrame or not self.bagButton then return end
     local db = self.db.bag
     local buttons = {}
     local exclude = self:GetExcludeTable()
     for _, button in ipairs(self.collectedButtons or {}) do
         local name = FrameName(button)
-        if button and name and not exclude[name] then table.insert(buttons, button) end
+        local shown = button and button.IsShown and button:IsShown()
+        if button and name and shown and not exclude[name] then table.insert(buttons, button) end
     end
 
     local total = #buttons
@@ -412,7 +487,6 @@ function QMT:LayoutBag()
         if button.SetFrameLevel then button:SetFrameLevel((cellFrame:GetFrameLevel() or 501) + 1) end
         button:SetScale(scale)
         self:MakeCollectedButtonEasyToMouse(button)
-        if button.Show then button:Show() end
         button:ClearAllPoints()
         button:SetPoint("CENTER", cellFrame, "CENTER", 0, 0)
     end
@@ -420,6 +494,7 @@ function QMT:LayoutBag()
 end
 
 function QMT:ToggleBag()
+    if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then return end
     if not self.db.bag.enabled then return end
     if self.bagFrame:IsShown() then
         self.bagFrame:Hide()
@@ -450,21 +525,26 @@ end
 
 
 function QMT:RestoreCollectedButtons()
-    if InCombatLockdown and InCombatLockdown() then return end
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingBagRestore = true
+        return
+    end
     if not self.collectedButtons then return end
     for _, button in ipairs(self.collectedButtons) do
         local info = self.originalButtons and self.originalButtons[button]
         if button and info then
             RestoreButtonHitInfo(button, info)
-            button:SetParent(info.parent or Minimap)
-            button:SetScale(info.scale or 1)
-            button:ClearAllPoints()
-            if info.point and info.point[1] then
-                button:SetPoint(unpack(info.point))
-            else
-                button:SetPoint("CENTER", Minimap, "CENTER", 0, 0)
-            end
-            if info.shown == false and button.Hide then button:Hide() elseif button.Show then button:Show() end
+            SafeCall(button.SetParent, button, info.parent or Minimap)
+            if button.SetScale then SafeCall(button.SetScale, button, info.scale or 1) end
+            if button.SetFrameStrata and info.frameStrata then SafeCall(button.SetFrameStrata, button, info.frameStrata) end
+            if button.SetFrameLevel and info.frameLevel then SafeCall(button.SetFrameLevel, button, info.frameLevel) end
+            if button.SetIgnoreParentScale and info.ignoreParentScale ~= nil then SafeCall(button.SetIgnoreParentScale, button, info.ignoreParentScale) end
+            if button.EnableMouse and info.mouseEnabled ~= nil then SafeCall(button.EnableMouse, button, info.mouseEnabled) end
+            RestorePoints(button, info.points, Minimap)
+            -- Visibility belongs to the button's addon. Only restore a button that
+            -- QFX itself had to reveal in older versions; never force a current hidden
+            -- button to show and override its owner's state machine.
+            if info.shown == false and button.Hide then SafeCall(button.Hide, button) end
         end
     end
     self:HideUnusedButtonCells(nil)
@@ -472,7 +552,27 @@ function QMT:RestoreCollectedButtons()
     self.collectedMap = {}
     self.originalButtons = {}
     self.hasScannedButtons = false
+    self.pendingBagRestore = false
     self.knownButtonNames = self.knownButtonNames or {}
+end
+
+function QMT:ProcessPendingBagOperations()
+    if InCombatLockdown and InCombatLockdown() then return end
+    local restore = self.pendingBagRestore
+    local rescan = self.pendingBagRescan
+    local layout = self.pendingBagLayout
+    self.pendingBagRestore = false
+    self.pendingBagRescan = false
+    self.pendingBagLayout = false
+
+    if restore then self:RestoreCollectedButtons() end
+    if self.db and self.db.bag and self.db.bag.enabled then
+        if rescan then
+            self:RescanButtons(true)
+        elseif layout then
+            self:LayoutBag()
+        end
+    end
 end
 
 function QMT:ApplyBagSettings()
