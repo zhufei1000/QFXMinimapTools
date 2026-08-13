@@ -1,0 +1,8 @@
+QFXMinimapTools 1.0.65
+
+World of Warcraft 12.1.0 compatibility and queue-eye fix
+- Added support for World of Warcraft 12.1.0 (Interface 120100).
+- Kept compatibility declarations for 12.0.5 and 12.0.7.
+- Fixed the queue eye not appearing on clients that use a different Blizzard queue-frame name.
+- Both QueueStatusMinimapButton and QueueStatusButton are now detected and positioned.
+- The active Blizzard queue eye is anchored to the minimap's lower-right corner while Blizzard retains visibility and click ownership.
