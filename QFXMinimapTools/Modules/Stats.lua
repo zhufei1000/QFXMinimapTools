@@ -277,7 +277,7 @@ function QMT:GetTimeText()
         local suffix = h >= 12 and "PM" or "AM"
         local hh = h % 12
         if hh == 0 then hh = 12 end
-        return string.format("%02d:%02d %s", hh, m, ColorText(suffix, AccentHex()))
+        return string.format("%d:%02d %s", hh, m, suffix)
     end
     return string.format("%02d:%02d", h, m)
 end

@@ -109,20 +109,46 @@ local function AddMinimapPage(f, page)
     UI.CreateFont(s, "GameFontDisableSmall", L.UNLOCK_MOVE_TIP, "TOPLEFT", 18, y - 38, 506)
 end
 
+local function GetTimeSourceLabel()
+    if QMT.db and QMT.db.display and QMT.db.display.useRealmTime then return L.TIME_SERVER end
+    return L.TIME_LOCAL
+end
+
+local function SetTimeSource(key)
+    QMT.db.display.useRealmTime = key == "SERVER"
+end
+
+local function GetTimeFormatLabel()
+    if QMT.db and QMT.db.display and QMT.db.display.use12Hour then return L.TIME_12HOUR end
+    return L.TIME_24HOUR
+end
+
+local function SetTimeFormat(key)
+    QMT.db.display.use12Hour = key == "12H"
+end
+
 local function AddStatsPage(f, page)
-    local s = UI.CreateSection(page, L.STATS, 12, -12, 552, 474, L.STATS_DESC or "")
+    local s = UI.CreateSection(page, L.STATS, 12, -12, 552, 520, L.STATS_DESC or "")
     local y = s.contentTop or -58
     UI.CreateCheck(s, L.SHOW_LOCATION, 18, y, function() return QMT.db.display.location end, function(v) QMT.db.display.location = v end, 230, RefreshStatsFromOptions); y = y - 30
     UI.CreateCheck(s, L.SHOW_COORDS, 18, y, function() return QMT.db.display.coordinates end, function(v) QMT.db.display.coordinates = v end, 230, RefreshStatsFromOptions); y = y - 30
-    UI.CreateCheck(s, L.SHOW_TIME, 18, y, function() return QMT.db.display.time end, function(v) QMT.db.display.time = v end, 230, RefreshStatsFromOptions); y = y - 30
+    UI.CreateCheck(s, L.SHOW_TIME, 18, y, function() return QMT.db.display.time end, function(v) QMT.db.display.time = v end, 230, RefreshStatsFromOptions); y = y - 34
+    f.timeSourceDropdown = UI.CreateDropdown(s, L.TIME_SOURCE, 38, y, 96, 150, {
+        {key = "LOCAL", label = L.TIME_LOCAL},
+        {key = "SERVER", label = L.TIME_SERVER},
+    }, GetTimeSourceLabel, SetTimeSource, RefreshStatsFromOptions, L.TIME_SOURCE_TIP); y = y - 48
+    f.timeFormatDropdown = UI.CreateDropdown(s, L.TIME_FORMAT, 38, y, 96, 150, {
+        {key = "24H", label = L.TIME_24HOUR},
+        {key = "12H", label = L.TIME_12HOUR},
+    }, GetTimeFormatLabel, SetTimeFormat, RefreshStatsFromOptions, L.TIME_FORMAT_TIP); y = y - 40
     UI.CreateCheck(s, L.SHOW_SYSTEM, 18, y, function() return QMT.db.display.system end, function(v) QMT.db.display.system = v end, 230, RefreshStatsFromOptions); y = y - 30
     UI.CreateCheck(s, L.SHOW_DIFFICULTY, 18, y, function() return QMT.db.display.difficulty end, function(v) QMT.db.display.difficulty = v end, 230, RefreshStatsFromOptions)
 
     y = s.contentTop or -58
-    UI.CreateCheck(s, L.SHOW_PHASE_ID, 286, y, function() return QMT.db.display.phaseID end, function(v) QMT.db.display.phaseID = v end, 220, RefreshStatsFromOptions); y = y - 54
+    UI.CreateCheck(s, L.SHOW_PHASE_ID, 286, y, function() return QMT.db.display.phaseID end, function(v) QMT.db.display.phaseID = v end, 220, RefreshStatsFromOptions)
 
-    f.fontSizeSlider = UI.CreateSlider(s, L.FONT_SIZE, 18, -246, 130, 220, 8, 22, 1, function() return QMT.db.display.fontSize end, function(v) QMT.db.display.fontSize = v end, function(v) return tostring(v) end, RefreshStatsFromOptions)
-    UI.CreateSlider(s, L.COORDS_DECIMALS or "Coords decimals", 18, -306, 130, 220, 0, 2, 1, function() return QMT.db.display.coordsDecimals or 1 end, function(v) QMT.db.display.coordsDecimals = v end, function(v) return tostring(v) end, RefreshStatsFromOptions)
+    f.fontSizeSlider = UI.CreateSlider(s, L.FONT_SIZE, 18, -340, 130, 220, 8, 22, 1, function() return QMT.db.display.fontSize end, function(v) QMT.db.display.fontSize = v end, function(v) return tostring(v) end, RefreshStatsFromOptions)
+    UI.CreateSlider(s, L.COORDS_DECIMALS or "Coords decimals", 18, -400, 130, 220, 0, 2, 1, function() return QMT.db.display.coordsDecimals or 1 end, function(v) QMT.db.display.coordsDecimals = v end, function(v) return tostring(v) end, RefreshStatsFromOptions)
 end
 
 local function AddBagPage(f, page)
@@ -140,7 +166,7 @@ local function AddBagPage(f, page)
 end
 
 local function AddFlightPage(f, page)
-    local s = UI.CreateSection(page, L.FLIGHT_SECTION, 12, -12, 552, 402, L.FLIGHT_DESC or "")
+    local s = UI.CreateSection(page, L.FLIGHT_SECTION, 12, -12, 552, 468, L.FLIGHT_DESC or "")
     local y = s.contentTop or -58
     f.flightCenterCheck = MakeControl(f, "minimapDependentControls", UI.CreateCheck, s, L.FLIGHT_CENTER, 18, y, function() return QMT.db.minimap.flightCenter end, function(v) QMT.db.minimap.flightCenter = v end, 410, CommitFlightOptions); y = y - 30
     f.flightGatheringCheck = MakeControl(f, "flightDependentControls", UI.CreateCheck, s, L.FLIGHT_GATHERING_ONLY, 38, y, function() return QMT.db.minimap.flightCenterOnlyGathering end, function(v) QMT.db.minimap.flightCenterOnlyGathering = v end, 420, CommitFlightOptions, L.FLIGHT_GATHERING_ONLY_TIP); y = y - 26
@@ -153,6 +179,8 @@ local function AddFlightPage(f, page)
     end
     QMT:RefreshGatheringProfessionStatus()
     y = y - 48
+    f.flightDisableMouseCheck = MakeControl(f, "flightDependentControls", UI.CreateCheck, s, L.FLIGHT_DISABLE_MOUSE, 38, y, function() return QMT.db.minimap.flightDisableMouse ~= false end, function(v) QMT.db.minimap.flightDisableMouse = v end, 420, CommitFlightOptions, L.FLIGHT_DISABLE_MOUSE_TIP); y = y - 26
+    f.flightHideTooltipsCheck = MakeControl(f, "flightMouseDependentControls", UI.CreateCheck, s, L.FLIGHT_HIDE_TOOLTIPS, 58, y, function() return QMT.db.minimap.flightHideTooltips == true end, function(v) QMT.db.minimap.flightHideTooltips = v end, 400, CommitFlightOptions, L.FLIGHT_HIDE_TOOLTIPS_TIP); y = y - 36
     f.flightScaleSlider = MakeControl(f, "flightDependentControls", UI.CreateSlider, s, L.FLIGHT_SCALE, 18, y, 132, 220, 1.00, 3.00, 0.05, function() return QMT.db.minimap.flightScale end, function(v) QMT.db.minimap.flightScale = v end, function(v) return string.format("%.2f", v) end, CommitFlightOptions); y = y - 56
     f.flightAlphaSlider = MakeControl(f, "flightDependentControls", UI.CreateSlider, s, L.FLIGHT_ALPHA, 18, y, 132, 220, 0.10, 1.00, 0.05, function() return QMT.db.minimap.flightAlpha end, function(v) QMT.db.minimap.flightAlpha = v end, function(v) return string.format("%.2f", v) end, CommitFlightOptions); y = y - 56
     f.flightPosYSlider = MakeControl(f, "flightDependentControls", UI.CreateSlider, s, L.FLIGHT_POS_Y, 18, y, 132, 220, -240, 40, 1, function() return QMT.db.minimap.flightPosY end, function(v) QMT.db.minimap.flightPosY = v end, function(v) return tostring(math.floor(v + 0.5)) end, CommitFlightOptions)
@@ -204,9 +232,11 @@ function QMT:RefreshOptionsControlState()
     if not f or not db then return end
     local minimapEnabled = db.minimap and db.minimap.enabled == true
     local flightEnabled = minimapEnabled and db.minimap and db.minimap.flightCenter == true
+    local flightMouseEnabled = flightEnabled and db.minimap.flightDisableMouse ~= false
     local bagEnabled = db.bag and db.bag.enabled == true
     UI.SetControlsEnabled(f.minimapDependentControls, minimapEnabled)
     UI.SetControlsEnabled(f.flightDependentControls, flightEnabled)
+    UI.SetControlsEnabled(f.flightMouseDependentControls, flightMouseEnabled)
     UI.SetControlsEnabled(f.bagDependentControls, bagEnabled)
     if f.borderPresetDropdown and self.RefreshBorderPresetControls then self:RefreshBorderPresetControls() end
     if self.RefreshGatheringProfessionStatus then self:RefreshGatheringProfessionStatus() end

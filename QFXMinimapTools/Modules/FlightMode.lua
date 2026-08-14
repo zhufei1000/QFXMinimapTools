@@ -117,6 +117,208 @@ function QMT:CaptureOutdoorFlightReturnState()
     }
 end
 
+local FLIGHT_PIN_NAME_MARKERS = {
+    "HandyNotes",
+    "TomTom",
+    "HereBeDragons",
+    "GatherMate",
+    "Routes",
+    "FarmHud",
+    "MinimapPing",
+    "QuestBlob",
+    "ArchBlob",
+}
+
+local function QFXFrameName(frame)
+    return frame and frame.GetName and frame:GetName() or nil
+end
+
+local function QFXIsForbidden(frame)
+    return frame and frame.IsForbidden and frame:IsForbidden()
+end
+
+function QMT:IsMinimapContentPin(frame)
+    local name = QFXFrameName(frame)
+    if type(name) ~= "string" or name == "" then return false end
+    for _, marker in ipairs(FLIGHT_PIN_NAME_MARKERS) do
+        if name:find(marker, 1, true) then return true end
+    end
+    return false
+end
+
+function QMT:LooksLikeFlightMinimapButton(frame)
+    if type(frame) ~= "table" or not frame.IsObjectType then return false end
+    if QFXIsForbidden(frame) then return false end
+    if frame == Minimap or frame == MinimapCluster or frame == _G.MinimapBackdrop then return false end
+    if frame == self.squareBorder or frame == self.minimapMover or frame == self.utilityRow then return false end
+    if frame == self.bagButton or (self.collectedMap and self.collectedMap[frame]) then return true end
+    if self.statFrames then
+        for _, statFrame in pairs(self.statFrames) do
+            if frame == statFrame then return false end
+        end
+    end
+    if self.indicatorButtons then
+        for _, button in pairs(self.indicatorButtons) do
+            if frame == button then return true end
+        end
+    end
+
+    local name = QFXFrameName(frame)
+    if name and name:find("QFXMinimapTools", 1, true) then return false end
+    if self:IsMinimapContentPin(frame) then return false end
+    if name and self.knownButtonNames and self.knownButtonNames[name] then return true end
+
+    local w, h = frame.GetSize and frame:GetSize()
+    local sizeOk = w and h and w >= 8 and h >= 8 and w <= 70 and h <= 70
+    if name then
+        if name:find("LibDBIcon", 1, true) or name:find("MinimapButton", 1, true) or name:find("MinimapIcon", 1, true)
+            or name:find("_Minimap", 1, true) or name:find("%-Minimap") then
+            return true
+        end
+        if sizeOk and (name:find("Minimap", 1, true) or name:find("MiniMap", 1, true)) and frame:IsObjectType("Button") then
+            if name == "Minimap" or name == "MinimapCluster" or name == "MinimapBackdrop" then return false end
+            return true
+        end
+    end
+
+    if sizeOk and frame:IsObjectType("Button") then
+        local parent = frame.GetParent and frame:GetParent()
+        if parent == Minimap or parent == MinimapCluster then return true end
+    end
+    return false
+end
+
+function QMT:HideOutdoorFlightAddonButtons()
+    if not self:IsOutdoorFlightCenterActive() then return end
+
+    local seen = {}
+    local function HideButton(frame)
+        if not frame or seen[frame] or not self:LooksLikeFlightMinimapButton(frame) then return end
+        seen[frame] = true
+        SafeCall(self.SetFrameFlightSuppressed, self, frame, true)
+    end
+
+    for _, button in ipairs(self.collectedButtons or {}) do HideButton(button) end
+    if self.buttonCells then
+        for _, cell in pairs(self.buttonCells) do HideButton(cell) end
+    end
+
+    if LibStub then
+        local lib = LibStub:GetLibrary("LibDBIcon-1.0", true)
+        if lib and lib.GetButtonList and lib.GetMinimapButton then
+            local ok, list = pcall(lib.GetButtonList, lib)
+            if ok and type(list) == "table" then
+                for _, name in ipairs(list) do
+                    local okButton, button = pcall(lib.GetMinimapButton, lib, name)
+                    if okButton then HideButton(button) end
+                end
+            end
+        end
+        local mapButtonLib = LibStub:GetLibrary("LibMapButton-1.1", true)
+        if mapButtonLib and type(mapButtonLib.buttons) == "table" then
+            for _, button in pairs(mapButtonLib.buttons) do HideButton(button) end
+        end
+    end
+
+    if Minimap and Minimap.GetChildren then
+        for _, child in ipairs({Minimap:GetChildren()}) do HideButton(child) end
+    end
+    if MinimapCluster and MinimapCluster.GetChildren then
+        for _, child in ipairs({MinimapCluster:GetChildren()}) do HideButton(child) end
+    end
+end
+
+local function QFXCaptureMouseState(frame)
+    if not frame then return nil end
+    return {
+        mouseEnabled = frame.IsMouseEnabled and SafeCall(frame.IsMouseEnabled, frame),
+        mouseClickEnabled = frame.IsMouseClickEnabled and SafeCall(frame.IsMouseClickEnabled, frame),
+        mouseMotionEnabled = frame.IsMouseMotionEnabled and SafeCall(frame.IsMouseMotionEnabled, frame),
+        mouseWheelEnabled = frame.IsMouseWheelEnabled and SafeCall(frame.IsMouseWheelEnabled, frame),
+    }
+end
+
+function QMT:DisableFrameFlightMouse(frame)
+    if not frame or QFXIsForbidden(frame) then return end
+    if self.flightSuppressedFrameStates and self.flightSuppressedFrameStates[frame] then return end
+    self.flightMouseStates = self.flightMouseStates or {}
+    if not self.flightMouseStates[frame] then
+        self.flightMouseStates[frame] = QFXCaptureMouseState(frame)
+    end
+    if frame.SetMouseClickEnabled then SafeCall(frame.SetMouseClickEnabled, frame, false) end
+    if frame.EnableMouseWheel then SafeCall(frame.EnableMouseWheel, frame, false) end
+    if frame.SetMouseMotionEnabled then
+        if self:ShouldShowOutdoorFlightTooltips() then
+            local motion = self.flightMouseStates[frame] and self.flightMouseStates[frame].mouseMotionEnabled
+            if motion ~= false then SafeCall(frame.SetMouseMotionEnabled, frame, true) end
+        else
+            SafeCall(frame.SetMouseMotionEnabled, frame, false)
+        end
+    end
+end
+
+function QMT:DisableFrameTreeFlightMouse(frame)
+    if not frame or QFXIsForbidden(frame) then return end
+    self:DisableFrameFlightMouse(frame)
+    if not frame.GetChildren then return end
+    local children = {frame:GetChildren()}
+    for i = 1, #children do
+        self:DisableFrameTreeFlightMouse(children[i])
+    end
+end
+
+function QMT:ShouldDisableOutdoorFlightMouse()
+    local db = self.db and self.db.minimap
+    return db and db.flightDisableMouse ~= false
+end
+
+function QMT:ShouldShowOutdoorFlightTooltips()
+    local db = self.db and self.db.minimap
+    return not self:ShouldDisableOutdoorFlightMouse() or not (db and db.flightHideTooltips == true)
+end
+
+function QMT:ApplyOutdoorFlightMousePassthrough()
+    if not self:IsOutdoorFlightCenterActive() then return end
+    if not self:ShouldDisableOutdoorFlightMouse() then
+        self:RestoreOutdoorFlightMousePassthrough()
+        return
+    end
+    if not self:ShouldShowOutdoorFlightTooltips() and GameTooltip and GameTooltip.Hide then
+        GameTooltip:Hide()
+    end
+    self:DisableFrameTreeFlightMouse(Minimap)
+    self:DisableFrameFlightMouse(_G.MinimapBackdrop)
+    self:DisableFrameTreeFlightMouse(_G.HybridMinimap)
+    if MinimapCluster then
+        self:DisableFrameTreeFlightMouse(MinimapCluster.MinimapContainer)
+    end
+    if self.statFrames then
+        for _, frame in pairs(self.statFrames) do self:DisableFrameFlightMouse(frame) end
+    end
+    if self.squareBorder then self:DisableFrameFlightMouse(self.squareBorder) end
+    if self.minimapMover then self:DisableFrameFlightMouse(self.minimapMover) end
+end
+
+function QMT:RestoreOutdoorFlightMousePassthrough()
+    for frame, state in pairs(self.flightMouseStates or {}) do
+        if frame and state and not QFXIsForbidden(frame) then
+            if frame.EnableMouse and state.mouseEnabled ~= nil then
+                SafeCall(frame.EnableMouse, frame, state.mouseEnabled)
+            end
+            if frame.SetMouseClickEnabled and state.mouseClickEnabled ~= nil then
+                SafeCall(frame.SetMouseClickEnabled, frame, state.mouseClickEnabled)
+            end
+            if frame.SetMouseMotionEnabled and state.mouseMotionEnabled ~= nil then
+                SafeCall(frame.SetMouseMotionEnabled, frame, state.mouseMotionEnabled)
+            end
+            if frame.EnableMouseWheel and state.mouseWheelEnabled ~= nil then
+                SafeCall(frame.EnableMouseWheel, frame, state.mouseWheelEnabled)
+            end
+        end
+    end
+    self.flightMouseStates = {}
+end
+
 function QMT:HideOutdoorFlightMinimapControls()
     if not self:IsOutdoorFlightCenterActive() then return end
 
@@ -180,6 +382,9 @@ function QMT:HideOutdoorFlightMinimapControls()
             if key ~= "location" and frame and frame.Hide then frame:Hide() end
         end
     end
+
+    self:HideOutdoorFlightAddonButtons()
+    self:ApplyOutdoorFlightMousePassthrough()
 end
 
 function QMT:ApplyOutdoorFlightCenterVisual()
@@ -224,6 +429,7 @@ function QMT:RestoreOutdoorFlightCenterVisual()
     local state = self.flightReturnState or {}
     self.flightModeActive = false
 
+    SafeCall(self.RestoreOutdoorFlightMousePassthrough, self)
     SafeCall(self.RestoreAllFlightSuppressedFrames, self)
     if self.SetNativeMinimapControlsHidden then
         SafeCall(self.SetNativeMinimapControlsHidden, self, db.enabled and db.square)
@@ -261,7 +467,11 @@ end
 function QMT:UpdateOutdoorFlightCenterState(force)
     local shouldCenter = self:ShouldUseOutdoorFlightCenter()
     if shouldCenter then
-        if force or not self.flightModeActive then self:ApplyOutdoorFlightCenterVisual() end
+        if force or not self.flightModeActive then
+            self:ApplyOutdoorFlightCenterVisual()
+        else
+            self:HideOutdoorFlightMinimapControls()
+        end
     elseif self.flightModeActive then
         self:RestoreOutdoorFlightCenterVisual()
     end
