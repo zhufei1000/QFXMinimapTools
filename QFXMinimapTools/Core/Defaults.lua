@@ -30,6 +30,8 @@ local defaults = {
         flightPosY = -55,
         flightAlpha = 0.50,
         flightCenterOnlyGathering = true,
+        flightDisableMouse = true,
+        flightHideTooltips = false,
         snapX = -9,
         snapY = -9,
     },
@@ -93,6 +95,13 @@ local function NormalizeCurrentDB(db)
     if type(db.minimap.flightCenterOnlyGathering) ~= "boolean" then
         db.minimap.flightCenterOnlyGathering = true
     end
+    if type(db.minimap.flightDisableMouse) ~= "boolean" then
+        db.minimap.flightDisableMouse = true
+    end
+    if type(db.minimap.flightHideTooltips) ~= "boolean" then
+        db.minimap.flightHideTooltips = db.minimap.flightShowTooltips == false
+    end
+    db.minimap.flightShowTooltips = nil
 
     db.bag = db.bag or {}
     db.bag.manualExclude = type(db.bag.manualExclude) == "table" and db.bag.manualExclude or {}
