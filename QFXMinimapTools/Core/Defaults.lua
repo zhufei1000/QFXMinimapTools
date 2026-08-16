@@ -8,7 +8,7 @@ local Print = QMT.Print
 local L = setmetatable({}, { __index = function(_, key) return QMT.L and QMT.L[key] end })
 
 local defaults = {
-    version = 37,
+    version = 38,
     ui = {
         language = "AUTO",
     },
@@ -49,7 +49,7 @@ local defaults = {
     },
     display = {
         fontSize = 12,
-        font = "Fonts\\FRIZQT__.TTF",
+        font = "AUTO",
         outline = "OUTLINE",
         shadow = true,
         accent = {0.5019608, 0.5019608, 1.00},
@@ -77,6 +77,9 @@ local function NormalizeCurrentDB(db)
 
     db.display = db.display or {}
     if type(db.display.font) ~= "string" or db.display.font == "" then db.display.font = "AUTO" end
+    -- FRIZQT does not contain every locale's glyphs (notably Chinese zone names).
+    -- Migrate the old built-in default while preserving genuinely custom fonts.
+    if db.display.font == "Fonts\\FRIZQT__.TTF" then db.display.font = "AUTO" end
     if tonumber(db.display.coordsInterval or 0) < 1.00 then db.display.coordsInterval = 1.00 end
 
     -- Removed live options. Existing SavedVariables may still contain them;

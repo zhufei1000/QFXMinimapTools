@@ -1,0 +1,6 @@
+QFXMinimapTools 1.0.66
+
+Localized zone-name font fix
+- Fixed zone names not appearing on some localized clients.
+- Changed the default display font to follow the client locale.
+- Migrated the previous FRIZQT default to AUTO while preserving custom font paths.
