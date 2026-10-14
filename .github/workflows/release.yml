@@ -1,0 +1,58 @@
+name: Release QFXMinimapTools
+on:
+  push:
+    tags:
+      - '[0-9]*'
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Avoid publishing a completed release twice
+        id: published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -qxF "QFXMinimapTools_${RELEASE_TAG}.zip"; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build clean release archive
+        if: steps.published.outputs.exists != 'true'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/publish_curseforge.py --addon-root QFXMinimapTools --project-id 1533519 --expected-version "$RELEASE_TAG"
+      - name: Validate packaged Lua
+        if: steps.published.outputs.exists != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua5.4
+          unzip -q dist/*.zip -d unpacked
+          find unpacked -type f -name '*.lua' -print0 | xargs -0 -n 1 luac5.4 -p
+      - name: Publish to CurseForge for WoW 12.1.5
+        if: steps.published.outputs.exists != 'true'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN || secrets.CF_API_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/publish_curseforge.py --addon-root QFXMinimapTools --project-id 1533519 --expected-version "$RELEASE_TAG" --game-version 12.1.5 --upload
+      - name: Preserve archive and upload receipt
+        if: always() && steps.published.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: QFXMinimapTools-release
+          path: dist/
+          if-no-files-found: ignore
+      - name: Create GitHub release
+        if: steps.published.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/*.zip dist/curseforge-upload.json --verify-tag --title "QFXMinimapTools $RELEASE_TAG" --notes-file RELEASE_NOTES.md

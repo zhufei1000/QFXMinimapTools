@@ -3,7 +3,8 @@
 ## Title-zhCN: QFX 小地图工具
 ## Notes: Lightweight minimap enhancement, stats text, and minimap button bag.
 ## Notes-zhCN: 轻量级小地图增强、信息文字显示与小地图按钮收纳。
-## Version: 1.0.68
+## Version: 1.0.69
+## X-Curse-Project-ID: 1533519
 ## OptionalDeps: QFXAddonManager
 ## Author: QFX / 群飞轩
 ## SavedVariables: QFXMinimapToolsDB
