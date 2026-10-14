@@ -41,8 +41,6 @@ function QMT:Initialize()
         self.eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
         self.eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
         self.eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-        self.eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
-        self.eventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
         self.eventFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
         self.eventFrame:RegisterEvent("UI_SCALE_CHANGED")
         self.eventFrame:RegisterEvent("UPDATE_PENDING_MAIL")
@@ -69,8 +67,7 @@ function QMT:Initialize()
                 if unit ~= "player" then return end
                 if QMT.flightModeActive
                     or (GetTime and GetTime() < (QMT.flightProbeUntil or 0))
-                    or (IsMounted and IsMounted())
-                    or (IsFlying and IsFlying()) then
+                    or (QMT.IsPlayerAirborne and QMT:IsPlayerAirborne()) then
                     SafeCall(QMT.RequestOutdoorFlightProbe, QMT, 8.0)
                     SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
                 end
@@ -80,11 +77,23 @@ function QMT:Initialize()
                 or event == "PLAYER_STOPPED_MOVING"
                 or event == "PLAYER_CONTROL_GAINED"
                 or event == "PLAYER_CONTROL_LOST"
+                or event == "PLAYER_CAN_GLIDE_CHANGED"
+                or event == "PLAYER_IS_GLIDING_CHANGED"
                 or event == "PLAYER_REGEN_ENABLED" then
                 if event == "PLAYER_REGEN_ENABLED" then
                     SafeCall(QMT.ProcessPendingBagOperations, QMT)
                 end
-                SafeCall(QMT.RequestOutdoorFlightProbe, QMT, 8.0)
+                -- Only real transitions extend the short 10 Hz probe window. Movement
+                -- events must not, or merely running while mounted would keep polling
+                -- at 10 Hz instead of the intended 2 Hz until takeoff.
+                local wantsFlightProbe = event == "PLAYER_MOUNT_DISPLAY_CHANGED"
+                    or event == "PLAYER_CAN_GLIDE_CHANGED"
+                    or event == "PLAYER_IS_GLIDING_CHANGED"
+                    or event == "PLAYER_CONTROL_GAINED"
+                    or event == "PLAYER_CONTROL_LOST"
+                if wantsFlightProbe then
+                    SafeCall(QMT.RequestOutdoorFlightProbe, QMT, 8.0)
+                end
                 SafeCall(QMT.RefreshOutdoorFlightWatcher, QMT)
                 SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
                 return
@@ -94,8 +103,6 @@ function QMT:Initialize()
             -- changes update the displayed value. No focus/nameplate/zone polling.
             if event == "PLAYER_TARGET_CHANGED" or event == "UPDATE_MOUSEOVER_UNIT" then
                 if QMT.db.display and QMT.db.display.phaseID then
-                    local unit = (event == "UPDATE_MOUSEOVER_UNIT") and "mouseover" or "target"
-                    SafeCall(QMT.TryCachePhaseIDFromUnit, QMT, unit)
                     SafeCall(QMT.UpdateUtilityPhaseText, QMT)
                 end
                 return
@@ -120,8 +127,8 @@ function QMT:Initialize()
             end
 
             if event == "UPDATE_PENDING_MAIL" or event == "MAIL_INBOX_UPDATE" or event == "MAIL_CLOSED" then
+                -- ApplyMailFramePosition refreshes the time status icons itself.
                 SafeCall(QMT.ApplyMailFramePosition, QMT)
-                SafeCall(QMT.UpdateTimeStatusIcons, QMT)
                 return
             end
 

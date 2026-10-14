@@ -170,7 +170,9 @@ function QMT:CaptureRoundMinimapArt()
         if obj.GetObjectType and obj:GetObjectType() == "Frame" and obj.GetName and tostring(obj:GetName() or ""):find("QFXMinimapTools") then return end
         self.roundMinimapArt[obj] = {
             alpha = obj.GetAlpha and obj:GetAlpha() or 1,
-            shown = obj.IsShown and obj:IsShown() or true,
+            -- Do not use "and/or" boolean fallback here: a legitimate false
+            -- IsShown() result would otherwise be converted to true.
+            shown = not obj.IsShown or obj:IsShown(),
         }
     end
 
@@ -260,6 +262,11 @@ function QMT:CaptureNativeMinimapControls()
     end
 
     if Minimap then
+        -- Retail 12.x exposes these as children instead of the old globals.
+        -- MinimapMixin:OnEnter() explicitly shows them, so keep them in the
+        -- managed set and let the OnShow hook suppress them in clean mode.
+        AddObj(Minimap.ZoomIn)
+        AddObj(Minimap.ZoomOut)
         for _, region in ipairs({Minimap:GetRegions()}) do
             if LooksLikeRoundMinimapArt(region) then AddObj(region) end
         end
@@ -508,52 +515,6 @@ function QMT:ShouldUseCustomMailIndicator()
         and not (self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive())
 end
 
-function QMT:GetMailIndicator()
-    if self.mailIndicator then return self.mailIndicator end
-    if not Minimap then return nil end
-
-    -- Addon-owned clean mail icon. It intentionally has no circular tracking border:
-    -- the icon sits on the square minimap edge like a compact edge marker.
-    local frame = CreateFrame("Frame", "QFXMinimapToolsMailIndicator", Minimap)
-    frame:SetSize(20, 15)
-    frame:EnableMouse(true)
-    frame:SetFrameStrata("HIGH")
-    if frame.SetFrameLevel and Minimap.GetFrameLevel then
-        frame:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 38)
-    end
-
-    local icon = frame:CreateTexture(nil, "ARTWORK")
-    if icon.SetAtlas then
-        icon:SetAtlas("UI-HUD-Minimap-Mail-Up", true)
-    else
-        icon:SetTexture("Interface\\Minimap\\MiniMap-MailIcon")
-        icon:SetSize(20, 15)
-    end
-    icon:SetPoint("CENTER", frame, "CENTER", 0, 0)
-    frame.Icon = icon
-
-    frame:SetScript("OnEnter", function(owner)
-        if not GameTooltip then return end
-        GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
-        GameTooltip:SetText(L.MAIL_PENDING or "New mail")
-        if type(_G.MinimapMailFrameUpdate) == "function" then
-            SafeCall(_G.MinimapMailFrameUpdate)
-        end
-        GameTooltip:Show()
-    end)
-    frame:SetScript("OnLeave", function()
-        if GameTooltip_Hide then
-            GameTooltip_Hide()
-        elseif GameTooltip then
-            GameTooltip:Hide()
-        end
-    end)
-    frame:Hide()
-
-    self.mailIndicator = frame
-    return frame
-end
-
 function QMT:CaptureNativeMailFrame(mail)
     if not mail then return end
     self.mailFrameOriginal = self.mailFrameOriginal or {}
@@ -581,7 +542,6 @@ end
 function QMT:ApplyMailFramePosition()
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local useCustom = self:ShouldUseCustomMailIndicator()
-    local indicator = self.mailIndicator
 
     if useCustom or flightActive then
         -- Suppress every known Blizzard mail-frame alias. Retail moved the
@@ -623,10 +583,8 @@ function QMT:ApplyMailFramePosition()
             end
         end
 
-        if indicator then indicator:Hide() end
         SafeCall(self.UpdateTimeStatusIcons, self)
     else
-        if indicator then indicator:Hide() end
         for _, mail in ipairs(self:GetNativeMailFrames()) do
             SafeCall(self.SetFrameFlightSuppressed, self, mail, false)
         end
@@ -767,33 +725,30 @@ end
 
 
 local QFX_UTILITY_ROW_HEIGHT = 22
-local QFX_UTILITY_ICON_SIZE = QFX_UTILITY_ROW_HEIGHT
-local QFX_UTILITY_MAIL_ICON_SIZE = 18
-local QFX_UTILITY_CRAFTING_ICON_SIZE = 18
+local QFX_UTILITY_ICON_MIN = 16
 
-function QMT:ApplyIndicatorTextFont(btn)
-    if not btn then return end
-    local d = self.db and self.db.display or {}
-    local font = d.font
-    if self.ResolveFontPath then font = self.ResolveFontPath(font) end
-    local size = tonumber(d.fontSize) or 12
-    local outline = d.outline or "OUTLINE"
-    local function Apply(fs)
-        if not fs then return end
-        if self.ApplyFontStringFont then
-            self.ApplyFontStringFont(fs, font, size, outline)
-        elseif fs.SetFont and font then
-            fs:SetFont(font, size, outline)
-        end
-        if d.shadow then
-            fs:SetShadowColor(0, 0, 0, 1)
-            fs:SetShadowOffset(1, -1)
-        else
-            fs:SetShadowOffset(0, 0)
-        end
+-- One visual spec for every minimap indicator. Icon art always comes from
+-- Blizzard atlases; size, hover and click behavior stay with QMT so all
+-- indicators present as a single set. Add new indicators here first.
+local QFX_INDICATOR_SPEC = {
+    calendar = { atlas = "UI-HUD-Calendar-%d-Up", fallback = "Interface\\Calendar\\UI-Calendar-Button" },
+    mail = { atlas = "UI-HUD-Minimap-Mail-Up", fallback = "Interface\\Minimap\\MiniMap-MailIcon" },
+    crafting = { atlas = "UI-HUD-Minimap-CraftingOrder-Up-2x", fallback = "Interface\\Icons\\INV_Inscription_Tradeskill01" },
+    tracking = { atlas = "UI-HUD-Minimap-Tracking-Up", fallback = "Interface\\Minimap\\Tracking\\None" },
+}
+
+function QMT:GetUtilityIconSize()
+    local fontSize = tonumber(self.db and self.db.display and self.db.display.fontSize) or 12
+    return math.max(QFX_UTILITY_ICON_MIN, math.min(QFX_UTILITY_ROW_HEIGHT, fontSize + 6))
+end
+
+function QMT:GetIndicatorArt(key, day)
+    local spec = QFX_INDICATOR_SPEC[key]
+    if not spec then return nil, nil end
+    if key == "calendar" then
+        return spec.atlas:format(day or (tonumber(date and date("%d")) or 1)), spec.fallback
     end
-    Apply(btn.Label)
-    Apply(btn.Badge)
+    return spec.atlas, spec.fallback
 end
 
 function QMT:CreateIndicatorButton(key)
@@ -822,45 +777,29 @@ function QMT:CreateIndicatorButton(key)
     -- bottom row as plain text lowers texture count and avoids overlaying
     -- other addons with decorative frames.
 
+    local iconSize = self:GetUtilityIconSize()
     btn.Icon = btn:CreateTexture(nil, "ARTWORK")
     btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    btn.Icon:SetSize(QFX_UTILITY_ICON_SIZE, QFX_UTILITY_ICON_SIZE)
+    btn.Icon:SetSize(iconSize, iconSize)
 
+    -- One shared hover treatment for every indicator: a subtle white ADD layer
+    -- instead of per-icon Blizzard highlight atlases, which never match each other.
     btn.HighlightIcon = btn:CreateTexture(nil, "HIGHLIGHT")
     btn.HighlightIcon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    btn.HighlightIcon:SetSize(QFX_UTILITY_ICON_SIZE, QFX_UTILITY_ICON_SIZE)
+    btn.HighlightIcon:SetSize(iconSize, iconSize)
+    btn.HighlightIcon:SetTexture("Interface\\Buttons\\WHITE8X8")
     btn.HighlightIcon:SetBlendMode("ADD")
-    btn.HighlightIcon:SetAlpha(0.75)
+    btn.HighlightIcon:SetAlpha(0.22)
     btn:SetHighlightTexture(btn.HighlightIcon)
 
-    btn.Label = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    btn.Label:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    btn.Label:SetTextColor(1, 1, 1, 1)
-    btn.Label:SetWordWrap(false)
-    btn.Label:Hide()
-
-    btn.Badge = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    btn.Badge:SetPoint("CENTER", btn, "CENTER", 0, 0)
-    btn.Badge:SetTextColor(1, 1, 1, 1)
-    btn.Badge:SetShadowColor(0, 0, 0, 1)
-    btn.Badge:SetShadowOffset(1, -1)
-    btn.Badge:SetWordWrap(false)
-    btn.Badge:Hide()
-
     btn:HookScript("OnMouseDown", function(self)
-        if self.PushedAtlas or self.PushedFallback then
-            QFXSetTextureOrAtlas(self.Icon, self.PushedAtlas, self.PushedFallback or self.NormalFallback)
-        end
+        if self.Icon then self.Icon:SetVertexColor(0.75, 0.75, 0.75, 1) end
     end)
     btn:HookScript("OnMouseUp", function(self)
-        if self.NormalAtlas or self.NormalFallback then
-            QFXSetTextureOrAtlas(self.Icon, self.NormalAtlas, self.NormalFallback)
-        end
+        if self.Icon then self.Icon:SetVertexColor(self.IconR or 1, self.IconG or 1, self.IconB or 1, 1) end
     end)
     btn:SetScript("OnLeave", function(self)
-        if self.NormalAtlas or self.NormalFallback then
-            QFXSetTextureOrAtlas(self.Icon, self.NormalAtlas, self.NormalFallback)
-        end
+        if self.Icon then self.Icon:SetVertexColor(self.IconR or 1, self.IconG or 1, self.IconB or 1, 1) end
         GameTooltip:Hide()
     end)
     btn:Hide()
@@ -868,64 +807,27 @@ function QMT:CreateIndicatorButton(key)
     return btn
 end
 
-function QMT:ApplyIndicatorButtonStyle(btn, glass)
+function QMT:ShowIndicatorIcon(btn, atlas, fallback, r, g, b)
     if not btn then return end
-    local styleKey = glass and "glass" or "plain"
-    if btn.__qfxIndicatorStyle == styleKey then return end
-    btn.__qfxIndicatorStyle = styleKey
-    if btn.SetBackdrop then
-        btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
-        if glass then
-            btn:SetBackdropColor(0.02, 0.04, 0.06, 0.48)
-        else
-            btn:SetBackdropColor(0, 0, 0, 0)
-        end
-        btn:SetBackdropBorderColor(0, 0, 0, 0)
-    end
-    if btn.GlassTop then btn.GlassTop:SetShown(glass and true or false) end
-end
-
-function QMT:ClearIndicatorBadge(btn)
-    if btn and btn.Badge then btn.Badge:Hide() end
-end
-
-function QMT:SetIndicatorBadge(btn, text, r, g, b)
-    if not btn or not btn.Badge then return end
-    self:ApplyIndicatorTextFont(btn)
-    btn.Badge:SetText(text or "")
-    btn.Badge:SetTextColor(r or 1, g or 1, b or 1, 1)
-    btn.Badge:Show()
-end
-
-function QMT:ShowIndicatorIcon(btn, atlas, fallback, r, g, b, highlightAtlas, pushedAtlas, highlightFallback, pushedFallback, iconWidth, iconHeight)
-    if not btn then return end
-    btn.__qfxGlassHighlightReady = nil
-    btn.__qfxGlassLabelReady = nil
-    self:ApplyIndicatorButtonStyle(btn, false)
-    self:ClearIndicatorBadge(btn)
-    if btn.Label then btn.Label:Hide() end
-    iconWidth = tonumber(iconWidth) or QFX_UTILITY_ICON_SIZE
-    iconHeight = tonumber(iconHeight) or iconWidth
+    local size = self:GetUtilityIconSize()
+    local ir, ig, ib = r or 1, g or 1, b or 1
     if btn.Icon then
         btn.Icon:ClearAllPoints()
         btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        btn.Icon:SetSize(iconWidth, iconHeight)
+        btn.Icon:SetSize(size, size)
         QFXSetTextureOrAtlas(btn.Icon, atlas, fallback)
-        btn.Icon:SetSize(iconWidth, iconHeight)
-        btn.Icon:SetVertexColor(r or 1, g or 1, b or 1, 1)
+        btn.Icon:SetSize(size, size)
+        btn.Icon:SetVertexColor(ir, ig, ib, 1)
         btn.Icon:Show()
     end
     if btn.HighlightIcon then
         btn.HighlightIcon:ClearAllPoints()
         btn.HighlightIcon:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        btn.HighlightIcon:SetSize(iconWidth, iconHeight)
-        QFXSetTextureOrAtlas(btn.HighlightIcon, highlightAtlas or atlas, highlightFallback or fallback)
-        btn.HighlightIcon:SetSize(iconWidth, iconHeight)
+        btn.HighlightIcon:SetSize(size, size)
         btn.HighlightIcon:SetVertexColor(1, 1, 1, 1)
     end
-    btn.NormalAtlas, btn.NormalFallback = atlas, fallback
-    btn.PushedAtlas, btn.PushedFallback = pushedAtlas, pushedFallback
-    btn.IconWidth, btn.IconHeight = iconWidth, iconHeight
+    btn.IconR, btn.IconG, btn.IconB = ir, ig, ib
+    btn.IconSize = size
     btn:SetSize(QFX_UTILITY_ROW_HEIGHT, QFX_UTILITY_ROW_HEIGHT)
 end
 
@@ -1109,7 +1011,38 @@ function QMT:CreateUtilityTextFrame(key)
     frame.Text:SetJustifyH("CENTER")
     frame.Text:SetWordWrap(false)
     frame.Text:SetTextColor(1, 1, 1, 1)
-    frame:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    if key == "system" then
+        -- FPS/MS has its own 5s ticker; on hover only refresh once before the tooltip.
+        frame:SetScript("OnEnter", function(owner)
+            SafeCall(QMT.UpdateUtilitySystemText, QMT, true)
+            QMT:ShowSystemTooltip(owner)
+        end)
+        frame:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    elseif key == "coordinates" then
+        frame:SetScript("OnEnter", function(owner)
+            SafeCall(QMT.StartUtilityCoordinatesHoverTicker, QMT)
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(L.COPY_COORDS or (QMT.ZH and "复制坐标" or "Copy coordinates"))
+            GameTooltip:AddLine(frame.__qfxText or "", 1, 1, 1, true)
+            GameTooltip:Show()
+        end)
+        frame:SetScript("OnLeave", function()
+            SafeCall(QMT.StopUtilityCoordinatesHoverTicker, QMT)
+            GameTooltip:Hide()
+        end)
+        frame:SetScript("OnMouseDown", function(_, button)
+            if button == "LeftButton" and QMT.ShowCopyCoordinatesPopup then QMT:ShowCopyCoordinatesPopup() end
+        end)
+    elseif key == "phase" then
+        frame:SetScript("OnEnter", function(owner)
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(QMT.ZH and "分片 / 区域实例编号" or "Shard / zone instance ID")
+            if QMT.GetPhaseIDText then GameTooltip:AddLine(QMT:GetPhaseIDText(), 1, 1, 1, true) end
+            GameTooltip:AddLine(QMT.ZH and "来自附近生物 GUID，并非暴雪提供的正式位面 ID；只在鼠标指向或目标变化时更新。" or "Derived from nearby creature GUIDs, not an official phase ID. Updates only on mouseover or target changes.", 0.75, 0.75, 0.75, true)
+            GameTooltip:Show()
+        end)
+        frame:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
     frame:Hide()
     self:ApplyUtilityTextFont(frame)
     self.utilityTextFrames[key] = frame
@@ -1174,33 +1107,25 @@ local function QFXCancelUtilityTicker(owner, key)
     if owner then owner[key] = nil end
 end
 
-function QMT:StartUtilitySystemHoverTicker()
-    if not self.db or not self.db.display or not self.db.display.system then return end
-    if self.UpdateUtilitySystemText then SafeCall(self.UpdateUtilitySystemText, self) end
-    if not C_Timer or not C_Timer.NewTicker or self.utilitySystemHoverTicker then return end
-    self.utilitySystemHoverTicker = C_Timer.NewTicker(0.75, function()
-        if not QMT.db or not QMT.db.display or not QMT.db.display.system then
-            QFXCancelUtilityTicker(QMT, "utilitySystemHoverTicker")
-            return
-        end
-        SafeCall(QMT.UpdateUtilitySystemText, QMT)
-    end)
-end
-
-function QMT:StopUtilitySystemHoverTicker()
-    QFXCancelUtilityTicker(self, "utilitySystemHoverTicker")
-end
-
 function QMT:StartUtilityCoordinatesHoverTicker()
     if not self.db or not self.db.display or not self.db.display.coordinates then return end
-    if self.UpdateUtilityCoordinatesText then SafeCall(self.UpdateUtilityCoordinatesText, self) end
+    local function RefreshCoordinates()
+        if QMT.ShouldUseUtilityRow and QMT:ShouldUseUtilityRow() then
+            SafeCall(QMT.UpdateUtilityCoordinatesText, QMT)
+        else
+            -- When minimap enhancement is disabled, coordinates fall back to the
+            -- in-map time frame and still need hover-driven refreshes.
+            SafeCall(QMT.UpdateOneStat, QMT, "time")
+        end
+    end
+    RefreshCoordinates()
     if not C_Timer or not C_Timer.NewTicker or self.utilityCoordsHoverTicker then return end
     self.utilityCoordsHoverTicker = C_Timer.NewTicker(0.50, function()
         if not QMT.db or not QMT.db.display or not QMT.db.display.coordinates then
             QFXCancelUtilityTicker(QMT, "utilityCoordsHoverTicker")
             return
         end
-        SafeCall(QMT.UpdateUtilityCoordinatesText, QMT)
+        RefreshCoordinates()
     end)
 end
 
@@ -1229,17 +1154,7 @@ function QMT:UpdateUtilitySystemText(skipLayout)
     local changed
     if self:ShouldUseUtilityRow() and d.system then
         changed = self:SetUtilityText(frame, self:GetUtilitySystemText(), 44, 1, 1, 1)
-        frame:SetScript("OnEnter", function(owner)
-            -- FPS/MS has its own 5s lightweight ticker; on hover only refresh once
-            -- before showing the detailed tooltip, no extra hover ticker.
-            SafeCall(QMT.UpdateUtilitySystemText, QMT, true)
-            QMT:ShowSystemTooltip(owner)
-        end)
-        frame:SetScript("OnLeave", function()
-            GameTooltip:Hide()
-        end)
     else
-        SafeCall(self.StopUtilitySystemHoverTicker, self)
         changed = self:HideUtilityText(frame)
     end
     if changed and not skipLayout then self:LayoutUtilityRow() end
@@ -1253,20 +1168,6 @@ function QMT:UpdateUtilityCoordinatesText(skipLayout)
     local changed
     if self:ShouldUseUtilityRow() and d.coordinates and text and text ~= "" then
         changed = self:SetUtilityText(frame, text, 58, 1, 1, 1)
-        frame:SetScript("OnEnter", function(owner)
-            SafeCall(QMT.StartUtilityCoordinatesHoverTicker, QMT)
-            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(L.COPY_COORDS or (QMT.ZH and "复制坐标" or "Copy coordinates"))
-            GameTooltip:AddLine(frame.__qfxText or text, 1, 1, 1, true)
-            GameTooltip:Show()
-        end)
-        frame:SetScript("OnLeave", function()
-            SafeCall(QMT.StopUtilityCoordinatesHoverTicker, QMT)
-            GameTooltip:Hide()
-        end)
-        frame:SetScript("OnMouseDown", function(_, button)
-            if button == "LeftButton" and QMT.ShowCopyCoordinatesPopup then QMT:ShowCopyCoordinatesPopup() end
-        end)
     else
         SafeCall(self.StopUtilityCoordinatesHoverTicker, self)
         changed = self:HideUtilityText(frame)
@@ -1281,13 +1182,6 @@ function QMT:UpdateUtilityPhaseText(skipLayout)
     local changed
     if self:ShouldUseUtilityRow() and d.phaseID then
         changed = self:SetUtilityText(frame, self:GetUtilityPhaseText(), 42, 1, 1, 1)
-        frame:SetScript("OnEnter", function(owner)
-            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(QMT.ZH and "位面 ID" or "Phase ID")
-            if QMT.GetPhaseIDText then GameTooltip:AddLine(QMT:GetPhaseIDText(), 1, 1, 1, true) end
-            GameTooltip:AddLine(QMT.ZH and "只在鼠标指向或目标变化时更新。" or "Updates only on mouseover or target changes.", 0.75, 0.75, 0.75, true)
-            GameTooltip:Show()
-        end)
     else
         changed = self:HideUtilityText(frame)
     end
@@ -1299,32 +1193,41 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     local d = self.db and self.db.display or {}
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local canUse = self:ShouldUseUtilityRow() and d.time and Minimap and not flightActive
-    if self:ShouldSuppressNativeCraftingOrderFrame() then
+    local timeFrame = self.statFrames and self.statFrames.time
+    local canAttachToTime = canUse and timeFrame and timeFrame.IsShown and timeFrame:IsShown()
+    local statusLevel = Minimap and Minimap.GetFrameLevel and ((Minimap:GetFrameLevel() or 0) + 43) or 360
+    local day = tonumber(date and date("%d")) or 1
+    local hasMail = canUse and QFXHasNewMail() or false
+    local hasCrafting = canUse and self:HasCraftingOrderIndicator() or false
+    local suppressNativeCrafting = self:ShouldSuppressNativeCraftingOrderFrame() and true or false
+
+    local signature = table.concat({
+        canUse and "1" or "0",
+        canAttachToTime and "1" or "0",
+        tostring(statusLevel),
+        tostring(self:GetUtilityIconSize()),
+        tostring(day),
+        hasMail and "1" or "0",
+        hasCrafting and "1" or "0",
+        suppressNativeCrafting and "1" or "0",
+    }, "|")
+    if self.timeStatusIconSignature == signature then return end
+    self.timeStatusIconSignature = signature
+
+    if suppressNativeCrafting then
         self:SuppressNativeCraftingOrderFrame()
     else
         self:RestoreNativeCraftingOrderFrame()
     end
-    local timeFrame = self.statFrames and self.statFrames.time
-    local canAttachToTime = canUse and timeFrame and timeFrame.IsShown and timeFrame:IsShown()
-    local statusLevel = Minimap and Minimap.GetFrameLevel and ((Minimap:GetFrameLevel() or 0) + 43) or 360
 
     local calendar = self:CreateIndicatorButton("calendar")
     if canUse then
-        local day = tonumber(date and date("%d")) or 1
-        self:ShowIndicatorIcon(
-            calendar,
-            "UI-HUD-Calendar-" .. tostring(day) .. "-Up",
-            "Interface\\Calendar\\UI-Calendar-Button",
-            1, 1, 1,
-            "UI-HUD-Calendar-" .. tostring(day) .. "-Mouseover",
-            "UI-HUD-Calendar-" .. tostring(day) .. "-Down",
-            "Interface\\Calendar\\UI-Calendar-Button",
-            "Interface\\Calendar\\UI-Calendar-Button"
-        )
+        local calendarAtlas, calendarFallback = self:GetIndicatorArt("calendar", day)
+        self:ShowIndicatorIcon(calendar, calendarAtlas, calendarFallback, 1, 1, 1)
         calendar:SetScript("OnEnter", function(owner)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
             GameTooltip:AddLine(QMT.ZH and "日历" or "Calendar")
-            GameTooltip:AddLine(QMT.ZH and "左键打开日历" or "Left-click to open the calendar", 1, 1, 1)
+            GameTooltip:AddLine(L.CALENDAR_OPEN or (QMT.ZH and "左键打开日历" or "Left-click to open the calendar"), 1, 1, 1)
             if QMT:HasCalendarNotification() then GameTooltip:AddLine(L.CALENDAR_PENDING or "Pending invites", 1, 0.82, 0.1, true) end
             GameTooltip:Show()
         end)
@@ -1345,20 +1248,9 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     end
 
     local mail = self:CreateIndicatorButton("mail")
-    local hasMail = canUse and QFXHasNewMail()
     if hasMail then
-        self:ShowIndicatorIcon(
-            mail,
-            "UI-HUD-Minimap-Mail-Up",
-            "Interface\\Minimap\\MiniMap-MailIcon",
-            1, 1, 1,
-            "UI-HUD-Minimap-Mail-Mouseover",
-            "UI-HUD-Minimap-Mail-Down",
-            "Interface\\Minimap\\MiniMap-MailIcon",
-            "Interface\\Minimap\\MiniMap-MailIcon",
-            QFX_UTILITY_MAIL_ICON_SIZE,
-            QFX_UTILITY_MAIL_ICON_SIZE
-        )
+        local mailAtlas, mailFallback = self:GetIndicatorArt("mail")
+        self:ShowIndicatorIcon(mail, mailAtlas, mailFallback, 1, 1, 1)
         mail:SetScript("OnEnter", function(owner)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
             GameTooltip:AddLine(L.MAIL_PENDING or (QMT.ZH and "有新邮件" or "New mail"))
@@ -1370,20 +1262,9 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     end
 
     local crafting = self:CreateIndicatorButton("crafting")
-    local hasCrafting = canUse and self:HasCraftingOrderIndicator()
     if hasCrafting then
-        self:ShowIndicatorIcon(
-            crafting,
-            "UI-HUD-Minimap-CraftingOrder-Up-2x",
-            "Interface\\Icons\\INV_Inscription_Tradeskill01",
-            1, 1, 1,
-            "UI-HUD-Minimap-CraftingOrder-Over-2x",
-            "UI-HUD-Minimap-CraftingOrder-Down-2x",
-            "Interface\\Icons\\INV_Inscription_Tradeskill01",
-            "Interface\\Icons\\INV_Inscription_Tradeskill01",
-            QFX_UTILITY_CRAFTING_ICON_SIZE,
-            QFX_UTILITY_CRAFTING_ICON_SIZE
-        )
+        local craftingAtlas, craftingFallback = self:GetIndicatorArt("crafting")
+        self:ShowIndicatorIcon(crafting, craftingAtlas, craftingFallback, 1, 1, 1)
         crafting:SetScript("OnEnter", function(owner)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
             GameTooltip:AddLine(QMT.ZH and "制造订单" or "Crafting Orders")
@@ -1424,7 +1305,6 @@ end
 function QMT:LayoutUtilityRow()
     local row = self:GetUtilityRow()
     if not self:ShouldUseUtilityRow() then
-        SafeCall(self.StopUtilitySystemHoverTicker, self)
         SafeCall(self.StopUtilityCoordinatesHoverTicker, self)
         if row then row:Hide() end
         if self.utilityTextFrames then
@@ -1483,11 +1363,13 @@ end
 function QMT:UpdateUtilityRow()
     local row = self:GetUtilityRow()
     if not self:ShouldUseUtilityRow() then
-        SafeCall(self.StopUtilitySystemHoverTicker, self)
         SafeCall(self.StopUtilityCoordinatesHoverTicker, self)
         if row then row:Hide() end
         if self.utilityTextFrames then for _, frame in pairs(self.utilityTextFrames) do if frame and frame.Hide then frame:Hide() end end end
         if self.indicatorButtons then for _, btn in pairs(self.indicatorButtons) do if btn and btn.Hide then btn:Hide() end end end
+        -- Icons were hidden outside UpdateTimeStatusIcons, so its change-detection
+        -- signature must be dropped or they would stay hidden after re-enabling.
+        self.timeStatusIconSignature = nil
         if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
             SafeCall(self.SuppressNativeCraftingOrderFrame, self)
         else
@@ -1660,7 +1542,8 @@ end
 
 function QMT:GetTrackingIndicator()
     local btn = self:CreateIndicatorButton("tracking")
-    self:ShowIndicatorIcon(btn, "UI-HUD-Minimap-Tracking-Up", "Interface\\Minimap\\Tracking\\None")
+    local atlas, fallback = self:GetIndicatorArt("tracking")
+    self:ShowIndicatorIcon(btn, atlas, fallback)
     btn:SetScript("OnEnter", function(owner)
         GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
         GameTooltip:AddLine(QMT.ZH and "追踪" or "Tracking")
@@ -1777,6 +1660,26 @@ function QMT:ApplyDifficultyFramePosition()
     local frames = self:GetNativeDifficultyFrames()
     if not frames or #frames == 0 then return end
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
+    local showDifficulty = self.db and self.db.display and self.db.display.difficulty == true
+
+    -- Preserve Blizzard's Show/Hide ownership. When the option is disabled,
+    -- restore the native layout first, then suppress only alpha and mouse input.
+    -- The OnShow hook below reapplies this state if Blizzard shows the badge later.
+    if not showDifficulty then
+        for _, frame in ipairs(frames) do
+            self:CaptureNativeDifficultyFrame(frame)
+            if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, false) end
+            QFXRestoreNativeDifficultyFrame(frame, self.difficultyFrameOriginal and self.difficultyFrameOriginal[frame])
+            if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
+            if frame.EnableMouse then SafeCall(frame.EnableMouse, frame, false) end
+            if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, true) end
+            if frame.HookScript and not frame.QFXMinimapToolsDifficultyHooked then
+                frame:HookScript("OnShow", function() SafeCall(QMT.ApplyDifficultyFramePosition, QMT) end)
+                frame.QFXMinimapToolsDifficultyHooked = true
+            end
+        end
+        return
+    end
 
     if not self:ShouldUseNativeDifficultyFrame() then
         for _, frame in ipairs(frames) do
@@ -1797,6 +1700,10 @@ function QMT:ApplyDifficultyFramePosition()
         SafeCall(frame.SetPoint, frame, "TOPLEFT", Minimap, "TOPLEFT", 2 + ((index - 1) * 24), -2)
         if frame.SetScale then SafeCall(frame.SetScale, frame, 0.75) end
         if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 1) end
+        local original = self.difficultyFrameOriginal and self.difficultyFrameOriginal[frame]
+        if frame.EnableMouse and original and original.mouseEnabled ~= nil then
+            SafeCall(frame.EnableMouse, frame, original.mouseEnabled)
+        end
         if frame.SetFrameStrata then SafeCall(frame.SetFrameStrata, frame, "HIGH") end
         if frame.SetFrameLevel and Minimap.GetFrameLevel then SafeCall(frame.SetFrameLevel, frame, (Minimap:GetFrameLevel() or 0) + 40) end
         self:StripIconBackgroundAndBorder(frame)
@@ -2010,7 +1917,7 @@ end
 
 function QMT:ApplySmartTopRightSnap()
     if self.flightModeActive then return end
-    if not self.db or not self.db.minimap or not self.db.minimap.autoSnap then return end
+    if not self.db or not self.db.minimap or not self.db.minimap.enabled or not self.db.minimap.autoSnap then return end
     if not Minimap or not MinimapCluster or not UIParent then return end
     local anchor = self:CreateSnapAnchor()
     local inset = self:GetSnapInset()
@@ -2311,20 +2218,17 @@ function QMT:ApplyNativeControlSkin()
     -- Do not force action-button square borders onto native minimap controls.
     -- Queue eye: prefer Blizzard's own round frame. Difficulty badge: use the same
     -- LibDBIcon-style round minimap frame as a fallback because QFX draws the text itself.
-    local db = self.db and self.db.minimap
-    local show = db and db.enabled and db.square
-    local style = self.GetBorderStyle and self:GetBorderStyle() or {r = 0.18, g = 0.18, b = 0.18, a = 1}
-    local color = {style.r or 0.18, style.g or 0.18, style.b or 0.18, style.a or 1}
-
+    -- The border style is intentionally unused here: both calls hide any leftover
+    -- QFX round border, so computing the external skin color first would be wasted work.
     for _, q in ipairs(self.GetNativeQueueFrames and self:GetNativeQueueFrames() or {}) do
         -- Queue eye stays as a pure eye glyph in the lower-right corner; do not add
         -- a QFX round button frame around it.
-        ApplyRoundMinimapButtonBorder(q, color, false, false)
+        ApplyRoundMinimapButtonBorder(q, nil, false, false)
     end
 
     local diff = self.statFrames and self.statFrames.difficulty
     if diff then
-        ApplyRoundMinimapButtonBorder(diff, color, false, false)
+        ApplyRoundMinimapButtonBorder(diff, nil, false, false)
     end
 end
 

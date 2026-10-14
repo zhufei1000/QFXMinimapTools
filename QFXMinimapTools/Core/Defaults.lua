@@ -25,7 +25,7 @@ local defaults = {
         autoSnap = true,
         locked = true,
         manualPoint = nil,
-        flightCenter = false,
+        flightCenter = true,
         flightScale = 2.10,
         flightPosY = -55,
         flightAlpha = 0.50,
@@ -71,7 +71,6 @@ local defaults = {
 }
 
 local function NormalizeCurrentDB(db)
-    local oldVersion = tonumber(db.version or 0) or 0
     db.ui = db.ui or {}
     db.ui.language = NormalizeLanguageChoice(db.ui.language)
 

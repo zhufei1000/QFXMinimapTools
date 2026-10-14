@@ -247,7 +247,7 @@ function QMT:CreateBagFrames()
     button.letter:SetPoint("CENTER", 0, 0)
     button.letter:SetText("Q")
     do
-        local font, size, flags = button.letter:GetFont()
+        local font, _, flags = button.letter:GetFont()
         ApplyFontStringFont(button.letter, font, 16, flags or "OUTLINE")
     end
     button.letter:SetTextColor(0.35, 0.70, 1.00, 1)

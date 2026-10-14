@@ -1,0 +1,17 @@
+QFXMinimapTools 1.0.67
+
+Compatibility and correctness
+- Added Retail 12.x Minimap.ZoomIn and Minimap.ZoomOut handling so Blizzard hover behavior cannot bring zoom buttons back over the clean minimap.
+- Fixed the instance-difficulty option so disabling it suppresses Blizzard's native difficulty badge and enabling it restores interaction.
+- Fixed gathering-profession detection to inspect the actual skill-line field instead of every numeric profession value.
+- Fixed round-art restoration incorrectly treating originally hidden regions as shown.
+
+Display updates
+- Aligned the clock refresh to minute boundaries instead of preserving an arbitrary login-time offset.
+- Coordinates are now shown inside instances whenever C_Map provides a valid player position.
+- Renamed the GUID-derived phase label to shard / zone instance ID and clarified that it is not an official phase ID.
+- Calendar notifications now prefer C_Calendar.GetNumPendingInvites with the existing texture check as a compatibility fallback.
+
+Flight-center performance
+- Added gliding-state API/event support for modern flight.
+- Reduced inactive mounted polling from 10 times per second to twice per second after the short transition probe window ends.

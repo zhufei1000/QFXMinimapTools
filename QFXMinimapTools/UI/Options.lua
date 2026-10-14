@@ -13,6 +13,8 @@ local function RefreshStatsFromOptions()
     if QMT.PlaceAllStatFrames then QMT:PlaceAllStatFrames() end
     if QMT.UpdateAllStats then QMT:UpdateAllStats() end
     if QMT.UpdateUtilityRow then QMT:UpdateUtilityRow() end
+    if QMT.ApplyDifficultyFramePosition then QMT:ApplyDifficultyFramePosition() end
+    if QMT.ApplyTrackingButtonPosition then QMT:ApplyTrackingButtonPosition() end
 end
 
 function QMT:CommitOptions(applyFunc)
@@ -376,4 +378,67 @@ function QMT:OpenBlizzardSettingsCategory()
     else
         self:ShowOptions()
     end
+end
+
+function QMT:BuildManagerPage(key, page, context, layout)
+    local saved={}
+    for _, name in ipairs({"CreateSection","CreateCheck","CreateSlider","CreateDropdown","CreateButton","CreateEditBox","CreateFont"}) do saved[name]=UI[name] end
+    local controls={}
+    local function Row(cfg)
+        local frame=layout:Row(cfg)
+        return frame._leftRegion and frame._leftRegion._control or frame
+    end
+    UI.CreateSection=function(_,title,_,_,_,_,note) layout:Section(title,note); return {contentTop=0} end
+    local function Commit(set, apply)
+        return function(v) set(v); QMT:CommitOptions(apply) end
+    end
+    local function Disabled(control)
+        for _, entry in ipairs({{"minimapDependentControls",not QMT.db.minimap.enabled},
+            {"flightDependentControls",not QMT.db.minimap.enabled or not QMT.db.minimap.flightCenter},
+            {"bagDependentControls",not QMT.db.bag.enabled}}) do
+            if entry[2] then for _, item in ipairs(controls[entry[1]] or {}) do if item==control then return true end end end
+        end
+        return false
+    end
+    UI.CreateCheck=function(_,label,_,_,get,set,_,apply,tip)
+        local control
+        control=Row({type="toggle",text=label,getValue=get,setValue=Commit(set,apply),tooltip=tip,disabled=function() return Disabled(control) end})
+        return control
+    end
+    UI.CreateSlider=function(_,label,_,_,_,_,min,max,step,get,set,_,apply)
+        local control
+        control=Row({type="slider",text=label,min=min,max=max,step=step,getValue=get,setValue=Commit(set,apply),disabled=function() return Disabled(control) end})
+        return control
+    end
+    UI.CreateDropdown=function(_,label,_,_,_,_,options,getLabel,set,apply)
+        local isLanguage=label==L.UI_LANGUAGE
+        local values,order={},{}
+        for _, item in ipairs(options or {}) do values[item.key]=item.label; order[#order+1]=item.key end
+        return Row({type="dropdown",text=label,values=values,order=order,getValue=function()
+            local labelText=getLabel()
+            for _, item in ipairs(options or {}) do if item.label==labelText then return item.key end end
+            return order[1]
+        end,setValue=function(v)
+            Commit(set,apply)(v)
+            if isLanguage and context.Rebuild then context.Rebuild() end
+        end})
+    end
+    UI.CreateButton=function(_,label,_,_,_,_,click)
+        if label==L.RELOAD then return {} end
+        return Row({type="button",text=label,onClick=function()
+            if label==L.RESET then context.Widgets:Confirm({title=label,text=label,onAccept=click}) else click() end
+        end})
+    end
+    UI.CreateEditBox=function(_,label,_,_,_,_,get,set,apply) return Row({type="input",text=label,getValue=get,setValue=Commit(set,apply)}) end
+    UI.CreateFont=function(_,_,text)
+        local frame=layout:Row({type="label",text=text})
+        return frame._leftRegion._label
+    end
+    local builds={overview=AddOverviewPage,minimap=AddMinimapPage,stats=AddStatsPage,bag=AddBagPage,flight=AddFlightPage,advanced=AddAdvancedPage}
+    local statusRefresh=QMT.RefreshGatheringProfessionStatus
+    local ok,err=pcall(function() assert(builds[key])(controls,page.content) end)
+    for name,fn in pairs(saved) do UI[name]=fn end
+    QMT.RefreshGatheringProfessionStatus=statusRefresh
+    if not ok then error(err) end
+    layout:Finish()
 end

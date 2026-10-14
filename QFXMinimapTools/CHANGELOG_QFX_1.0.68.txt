@@ -1,0 +1,22 @@
+QFXMinimapTools 1.0.68
+
+CPU and refresh fixes
+- Target/mouseover shard events are now registered only while the shard display is enabled, and each unit's GUID result is cached so the same creature is not parsed repeatedly.
+- Time status icons now use a change signature; mail, calendar, and CVAR events no longer rebuild the calendar, mail, and crafting icons when nothing changed.
+- Mail events no longer refresh the status icons twice per event.
+- Native control skinning no longer computes an unused external border color on every refresh.
+- Utility-row stat text now caches its text, size, visibility, and font state instead of re-applying them on every event.
+- Calendar invite "!" and the utility hover scripts are set once instead of being recreated on every update.
+- Mounted flight-center probing no longer stays at 10 Hz while only mounted or moving on the ground; it drops to the intended 2 Hz until a real takeoff transition.
+
+UI consistency
+- Calendar, mail, crafting, and tracking indicators now share one native-atlas specification: same 22x22 hit area, same icon size, same hover highlight, and one centralized art table.
+- Indicator icon size follows the configured font size so the bottom row stays visually balanced.
+
+Cleanup
+- Removed dead code: legacy custom mail indicator, indicator badge/label helpers, system hover ticker, calendar-bang helper, and leftover ticker/update branches.
+- Enabled the previously unused CALENDAR_OPEN locale key and removed remaining unused locals.
+
+Defaults
+- Outdoor flight center and the gathering-profession check are now enabled by default for new installs.
+- Existing SavedVariables keep the user's saved choice; use Reset defaults or tick the option to enable it on an existing profile.

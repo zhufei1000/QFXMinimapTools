@@ -10,6 +10,14 @@ local function Now()
     return GetTime and GetTime() or 0
 end
 
+function QMT:IsPlayerAirborne()
+    if C_PlayerInfo and C_PlayerInfo.GetGlidingInfo then
+        local ok, isGliding = pcall(C_PlayerInfo.GetGlidingInfo)
+        if ok and isGliding then return true end
+    end
+    return IsFlying and IsFlying() or false
+end
+
 -- Outdoor flight minimap focus mode
 -- ############################################################
 function QMT:IsOutdoorFlightCenterActive()
@@ -45,8 +53,8 @@ function QMT:RefreshGatheringProfessionCache()
         return true
     end
 
-    local primary1, primary2, archaeology, fishing, cooking = GetProfessions()
-    local professionIndexes = {primary1, primary2, archaeology, fishing, cooking}
+    local primary1, primary2 = GetProfessions()
+    local professionIndexes = {primary1, primary2}
     local found = false
     for _, professionIndex in ipairs(professionIndexes) do
         if professionIndex then
@@ -54,19 +62,18 @@ function QMT:RefreshGatheringProfessionCache()
             local first = info[1]
             if type(first) == "table" then
                 local name = first.name or first.professionName or first.skillLineName
-                if IsGatheringProfessionName(name) then found = true end
-                if not found then
-                    for _, value in pairs(first) do
-                        if GATHERING_SKILL_IDS[tonumber(value or 0) or 0] then found = true break end
-                    end
-                end
+                local skillLine = first.skillLine or first.skillLineID or first.professionID
+                found = GATHERING_SKILL_IDS[tonumber(skillLine or 0) or 0] == true
+                    or IsGatheringProfessionName(name)
             else
-                if IsGatheringProfessionName(first) then found = true end
-                if not found then
-                    for _, value in ipairs(info) do
-                        if GATHERING_SKILL_IDS[tonumber(value or 0) or 0] then found = true break end
-                    end
-                end
+                -- GetProfessionInfo's seventh return value is the skill line.
+                -- Do not scan every numeric return: rank/max-rank/offset values
+                -- can coincidentally equal 182 or 186 and cause false positives.
+                local skillLine = info[7]
+                local skillLineName = info[11]
+                found = GATHERING_SKILL_IDS[tonumber(skillLine or 0) or 0] == true
+                    or IsGatheringProfessionName(first)
+                    or IsGatheringProfessionName(skillLineName)
             end
             if found then break end
         end
@@ -105,7 +112,7 @@ function QMT:ShouldUseOutdoorFlightCenter()
     if IsInInstance then inInstance, instanceType = IsInInstance() end
     if inInstance or (instanceType and instanceType ~= "none") then return false end
     if IsResting and IsResting() then return false end
-    return IsFlying and IsFlying() or false
+    return self:IsPlayerAirborne()
 end
 
 function QMT:CaptureOutdoorFlightReturnState()
@@ -159,7 +166,6 @@ function QMT:HideOutdoorFlightMinimapControls()
     if landing then SafeCall(self.SetFrameFlightSuppressed, self, landing, true) end
 
     if self.squareBorder then self.squareBorder:Hide() end
-    if self.mailIndicator then self.mailIndicator:Hide() end
     if self.indicatorButtons then
         for _, frame in pairs(self.indicatorButtons) do if frame and frame.Hide then frame:Hide() end end
     end
@@ -167,7 +173,6 @@ function QMT:HideOutdoorFlightMinimapControls()
     if self.utilityTextFrames then
         for _, frame in pairs(self.utilityTextFrames) do if frame and frame.Hide then frame:Hide() end end
     end
-    SafeCall(self.StopUtilitySystemHoverTicker, self)
     SafeCall(self.StopUtilityCoordinatesHoverTicker, self)
 
     if self.bagButton then self.bagButton:Hide() end
@@ -286,6 +291,8 @@ local QFX_FLIGHT_EVENTS = {
     "PLAYER_STOPPED_MOVING",
     "PLAYER_CONTROL_GAINED",
     "PLAYER_CONTROL_LOST",
+    "PLAYER_CAN_GLIDE_CHANGED",
+    "PLAYER_IS_GLIDING_CHANGED",
     "UNIT_AURA",
 }
 
@@ -320,19 +327,20 @@ function QMT:RefreshOutdoorFlightWatcher()
         self.flightModeActive
         or inProbeWindow
         or (IsMounted and IsMounted())
-        or (IsFlying and IsFlying())
+        or self:IsPlayerAirborne()
     )
     if shouldWatch then
         self.flightWatcher:SetScript("OnUpdate", function(frame, elapsed)
             frame.elapsed = (frame.elapsed or 0) + (elapsed or 0)
-            local interval = QMT.flightModeActive and 0.20 or 0.10
+            local probing = Now() < (QMT.flightProbeUntil or 0)
+            local interval = QMT.flightModeActive and 0.20 or (probing and 0.10 or 0.50)
             if frame.elapsed < interval then return end
             frame.elapsed = 0
             SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
             local stillWatch = QMT.flightModeActive
                 or Now() < (QMT.flightProbeUntil or 0)
                 or (IsMounted and IsMounted())
-                or (IsFlying and IsFlying())
+                or QMT:IsPlayerAirborne()
             if not stillWatch then QMT:RefreshOutdoorFlightWatcher() end
         end)
     else
@@ -340,4 +348,3 @@ function QMT:RefreshOutdoorFlightWatcher()
         self.flightWatcher.elapsed = 0
     end
 end
-

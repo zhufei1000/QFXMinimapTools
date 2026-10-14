@@ -87,6 +87,12 @@ function QMT:ApplyTextStyle(frame, point)
     local font = ResolveFontPath(d.font)
     local fontSize = tonumber(d.fontSize) or 12
     local outline = d.outline or "OUTLINE"
+    local styleKey = tostring(point or "") .. "|" .. tostring(font or "") .. "|" .. tostring(fontSize) .. "|" .. tostring(outline) .. "|" .. tostring(d.shadow and 1 or 0)
+    if frame.__qfxTextStyleKey == styleKey then return end
+    frame.__qfxTextStyleKey = styleKey
+    frame.__qfxTextW, frame.__qfxTextH = nil, nil
+    frame.__qfxStatW, frame.__qfxStatH = nil, nil
+    frame.__qfxTimeLayoutKey = nil
     font = ApplyFontStringFont(frame.Text, font, fontSize, outline)
     frame.Text:SetTextColor(1, 1, 1, 1)
     if d.shadow then
@@ -147,8 +153,6 @@ end
 
 function QMT:GetCoordinatesText()
     if not C_Map or not C_Map.GetBestMapForUnit or not C_Map.GetPlayerMapPosition then return "" end
-    local _, instanceType = IsInInstance()
-    if instanceType and instanceType ~= "none" then return "" end
     local mapID = C_Map.GetBestMapForUnit("player")
     if not mapID then return "" end
     local pos = C_Map.GetPlayerMapPosition(mapID, "player")
@@ -198,6 +202,13 @@ local function AddCalendarSignalCandidate(list, obj)
 end
 
 function QMT:GetNativeCalendarInviteSignal()
+    -- Prefer the actual pending-invite count. Texture visibility is only a
+    -- presentation detail and can be cleared independently by Blizzard UI.
+    if C_Calendar and C_Calendar.GetNumPendingInvites then
+        local count = SafeCall(C_Calendar.GetNumPendingInvites)
+        if type(count) == "number" then return count > 0, 1 end
+    end
+
     local shown, alpha = false, 1
     local candidates = {}
     AddCalendarSignalCandidate(candidates, _G.GameTimeCalendarInvitesTexture)
@@ -236,31 +247,19 @@ function QMT:UpdateCalendarNotificationIndicator()
     local bang = frame and frame.CalendarBang
     if not bang then return false end
 
-    local ok, shown, alpha = pcall(function() return self:GetNativeCalendarInviteSignal() end)
-    if not ok then shown, alpha = false, 1 end
-
-    if shown then
-        bang:SetText("!")
-        bang:SetAlpha(alpha or 1)
-        bang:Show()
-        return true
+    local shown, alpha = self:GetNativeCalendarInviteSignal()
+    local stateKey = (shown and "1" or "0") .. ":" .. tostring(math.floor((alpha or 1) * 10))
+    if bang.__qfxBangState ~= stateKey then
+        bang.__qfxBangState = stateKey
+        if shown then
+            bang:SetText("!")
+            bang:SetAlpha(alpha or 1)
+            bang:Show()
+        else
+            bang:Hide()
+        end
     end
-
-    bang:Hide()
-    return false
-end
-
-function QMT:RefreshCalendarNotificationIndicatorOnly()
-    local frame = self.statFrames and self.statFrames.time
-    local bang = frame and frame.CalendarBang
-    if not bang then return end
-    local wasShown = bang:IsShown()
-    local wasAlpha = bang:GetAlpha() or 1
-    local isShown = self:UpdateCalendarNotificationIndicator()
-    local isAlpha = bang:GetAlpha() or 1
-    if wasShown ~= isShown or math.abs(wasAlpha - isAlpha) > 0.05 then
-        SafeCall(self.UpdateOneStat, self, "time")
-    end
+    return shown and true or false
 end
 
 function QMT:GetTimeText()
@@ -300,32 +299,50 @@ function QMT:GetSystemText()
 end
 
 local function QFXExtractPhaseIDFromGUID(guid)
-    local ok, phaseID = pcall(function()
-        if not guid or type(guid) ~= "string" or guid == "" then return nil end
+    if issecretvalue and issecretvalue(guid) then return nil end
+    if not guid or type(guid) ~= "string" or guid == "" then return nil end
 
-        -- Retail creature-style GUID fields:
-        -- Creature-0-server-instance-zoneUID-npcID-spawnUID
-        local guidType, _, _, _, zoneUID = strsplit("-", guid)
-        if guidType == "Creature" or guidType == "Vehicle" or guidType == "GameObject" then
-            local id = tonumber(zoneUID)
-            if id and id > 0 and id < 100000000 then
-                return math.floor(id)
-            end
+    -- Retail creature-style GUID fields:
+    -- Creature-0-server-instance-zoneUID-npcID-spawnUID
+    local guidType, _, _, _, zoneUID = strsplit("-", guid)
+    if guidType == "Creature" or guidType == "Vehicle" or guidType == "GameObject" then
+        local id = tonumber(zoneUID)
+        if id and id > 0 and id < 100000000 then
+            return math.floor(id)
         end
-        return nil
-    end)
-    if ok then return phaseID end
+    end
     return nil
 end
 
 function QMT:ClearPhaseCache()
     self.lastPhaseID = nil
+    self.phaseUnitCache = nil
 end
 
 function QMT:TryCachePhaseIDFromUnit(unit)
     if not unit or not UnitExists or not UnitExists(unit) then return nil end
-    local guid = SafeCall(UnitGUID, unit)
+    -- Restricted identities cannot be parsed, compared or cached as phase IDs.
+    if C_Secrets and C_Secrets.ShouldUnitIdentityBeSecret and C_Secrets.ShouldUnitIdentityBeSecret(unit) then return nil end
+    local guid = UnitGUID and UnitGUID(unit)
+    if issecretvalue and issecretvalue(guid) then return nil end
+    if not guid then return nil end
+
+    local cache = self.phaseUnitCache
+    if not cache then
+        cache = {}
+        self.phaseUnitCache = cache
+    end
+    local entry = cache[unit]
+    if entry and entry.guid == guid then
+        if entry.phaseID then
+            self.lastPhaseID = entry.phaseID
+            return entry.phaseID
+        end
+        return nil
+    end
+
     local phaseID = QFXExtractPhaseIDFromGUID(guid)
+    cache[unit] = { guid = guid, phaseID = phaseID }
     if phaseID then
         self.lastPhaseID = phaseID
         return phaseID
@@ -350,7 +367,7 @@ end
 
 function QMT:GetPhaseIDText()
     local phaseID = self:DetectPhaseID()
-    local prefix = QMT.ZH and "位面 " or "Phase "
+    local prefix = QMT.ZH and "分片 " or "Shard "
     if not phaseID then
         return prefix .. ColorText("--", AccentHex())
     end
@@ -358,7 +375,7 @@ function QMT:GetPhaseIDText()
 end
 
 function QMT:GetDifficultyText()
-    local _, _, diffID, _, maxPlayers, _, _, instanceID, currentPlayers = GetInstanceInfo()
+    local _, _, diffID, _, maxPlayers, _, _, _, currentPlayers = GetInstanceInfo()
     if not diffID or diffID == 0 then return "" end
     local accent = AccentHex()
     local count = currentPlayers or maxPlayers or ""
@@ -435,31 +452,65 @@ function QMT:UpdateOneStat(key)
     elseif key == "time" and (d.time or d.coordinates) then text = self:GetTimeCoordinatesText()
     elseif key == "system" and d.system then text = self:GetSystemText()
     elseif key == "difficulty" and d.difficulty then text = self:GetDifficultyText() end
-    frame.Text:SetText(text)
+    if frame.__qfxStatText ~= text then
+        frame.Text:SetText(text)
+        frame.__qfxStatText = text
+        frame.__qfxTextW, frame.__qfxTextH = nil, nil
+    end
+    local textW = frame.__qfxTextW
+    if not textW then
+        textW = frame.Text:GetStringWidth() or 0
+        frame.__qfxTextW = textW
+    end
+    local textH = frame.__qfxTextH
+    if not textH then
+        textH = frame.Text:GetStringHeight() or 0
+        frame.__qfxTextH = textH
+    end
     if key == "difficulty" then
-        local w = math.max(24, (frame.Text:GetStringWidth() or 0) + 8)
-        frame:SetSize(w, 24)
-        frame.Text:ClearAllPoints()
-        frame.Text:SetPoint("CENTER", frame, "CENTER", 0, 0)
-        frame.Text:SetJustifyH("CENTER")
+        local w = math.max(24, textW + 8)
+        if frame.__qfxStatW ~= w or frame.__qfxStatH ~= 24 then
+            frame:SetSize(w, 24)
+            frame.__qfxStatW, frame.__qfxStatH = w, 24
+        end
+        if not frame.__qfxDiffAligned then
+            frame.Text:ClearAllPoints()
+            frame.Text:SetPoint("CENTER", frame, "CENTER", 0, 0)
+            frame.Text:SetJustifyH("CENTER")
+            frame.__qfxDiffAligned = true
+        end
     elseif key == "time" then
         local bangVisible = self:UpdateCalendarNotificationIndicator()
-        local textW = frame.Text:GetStringWidth() or 0
-        local textH = frame.Text:GetStringHeight() or 0
-        local bangW = (bangVisible and frame.CalendarBang and (frame.CalendarBang:GetStringWidth() or 0)) or 0
-        local gap = bangVisible and 3 or 0
-        frame:SetSize(math.max(10, textW + bangW + gap), math.max(10, textH))
-        frame.Text:ClearAllPoints()
-        frame.Text:SetPoint("CENTER", frame, "CENTER", -((bangW + gap) * 0.5), 0)
-        frame.Text:SetJustifyH("CENTER")
+        local bangW, gap = 0, 0
         if bangVisible and frame.CalendarBang then
-            frame.CalendarBang:ClearAllPoints()
-            frame.CalendarBang:SetPoint("LEFT", frame.Text, "RIGHT", gap, 0)
+            bangW = frame.CalendarBang:GetStringWidth() or 0
+            gap = 3
+        end
+        local layoutKey = (bangVisible and "1" or "0") .. ":" .. tostring(textW) .. ":" .. tostring(bangW)
+        if frame.__qfxTimeLayoutKey ~= layoutKey then
+            frame.__qfxTimeLayoutKey = layoutKey
+            frame:SetSize(math.max(10, textW + bangW + gap), math.max(10, textH))
+            frame.Text:ClearAllPoints()
+            frame.Text:SetPoint("CENTER", frame, "CENTER", -((bangW + gap) * 0.5), 0)
+            frame.Text:SetJustifyH("CENTER")
+            if bangVisible and frame.CalendarBang then
+                frame.CalendarBang:ClearAllPoints()
+                frame.CalendarBang:SetPoint("LEFT", frame.Text, "RIGHT", gap, 0)
+            end
         end
     else
-        frame:SetSize(math.max(10, frame.Text:GetStringWidth()), math.max(10, frame.Text:GetStringHeight()))
+        local w = math.max(10, textW)
+        local h = math.max(10, textH)
+        if frame.__qfxStatW ~= w or frame.__qfxStatH ~= h then
+            frame:SetSize(w, h)
+            frame.__qfxStatW, frame.__qfxStatH = w, h
+        end
     end
-    frame:SetShown(enabled and text ~= "")
+    local shown = enabled and text ~= ""
+    if frame.__qfxStatShown ~= shown then
+        frame:SetShown(shown)
+        frame.__qfxStatShown = shown
+    end
 end
 
 function QMT:UpdateAllStats()
@@ -498,8 +549,32 @@ function QMT:EnsureStatTicker(key, interval, callback)
     return true
 end
 
+function QMT:EnsureAlignedMinuteTicker(callback)
+    if not C_Timer or not C_Timer.NewTicker then return false end
+    if self.timeTicker and self.timeTickerInterval == "minute-aligned" then return true end
+    QFXCancelTicker(self, "timeTicker")
+
+    if not C_Timer.NewTimer then
+        return self:EnsureStatTicker("time", 60, callback)
+    end
+
+    local seconds = tonumber(date and date("%S")) or 0
+    local delay = math.max(0.1, 60 - seconds + 0.05)
+    self.timeTickerInterval = "minute-aligned"
+    self.timeTicker = C_Timer.NewTimer(delay, function()
+        callback()
+        local cfg = QMT.db and QMT.db.display
+        if not cfg or not cfg.time then
+            QFXCancelTicker(QMT, "timeTicker")
+            return
+        end
+        QMT.timeTicker = C_Timer.NewTicker(60, callback)
+        QMT.timeTickerInterval = "minute-aligned"
+    end)
+    return true
+end
+
 function QMT:CancelStatTickers()
-    QFXCancelTicker(self, "coordsTicker")
     QFXCancelTicker(self, "systemTicker")
     QFXCancelTicker(self, "timeTicker")
 end
@@ -514,13 +589,6 @@ function QMT:RefreshStatUpdaterState()
     --   update once at layout time, then while the minimap/coordinates text is hovered.
     -- * Time has its own slow minute ticker.
     -- * Phase ID is target/mouseover-event driven only.
-    if self.statUpdater then
-        self.statUpdater:SetScript("OnUpdate", nil)
-        self.statUpdaterRunning = false
-    end
-
-    QFXCancelTicker(self, "coordsTicker")
-
     if not (C_Timer and C_Timer.NewTicker) then
         self:CancelStatTickers()
         return
@@ -541,7 +609,7 @@ function QMT:RefreshStatUpdaterState()
     end
 
     if d.time then
-        self:EnsureStatTicker("time", math.max(60, tonumber(d.timeInterval or 60) or 60), function()
+        self:EnsureAlignedMinuteTicker(function()
             local cfg = QMT.db and QMT.db.display
             if not cfg or not cfg.time then return end
             SafeCall(QMT.UpdateOneStat, QMT, "time")
@@ -556,12 +624,22 @@ end
 
 function QMT:RefreshPhaseEventRegistration()
     local eventFrame = self.eventFrame
-    if not eventFrame or not eventFrame.UnregisterEvent then return end
-    -- 1.0.59: no nameplate phase cache. Target/mouseover events are registered
-    -- directly by Core.lua and are the only live phase refresh sources.
+    if not eventFrame or not eventFrame.RegisterEvent or not eventFrame.UnregisterEvent then return end
     if self.phaseNameplateEventRegistered then
         eventFrame:UnregisterEvent("NAME_PLATE_UNIT_ADDED")
         self.phaseNameplateEventRegistered = false
+    end
+    -- Target/mouseover are registered only while the phase display is enabled,
+    -- so disabling it removes the highest-frequency event source.
+    local enabled = self.db and self.db.display and self.db.display.phaseID == true
+    if enabled and not self.phaseEventsRegistered then
+        eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+        eventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+        self.phaseEventsRegistered = true
+    elseif (not enabled) and self.phaseEventsRegistered then
+        eventFrame:UnregisterEvent("PLAYER_TARGET_CHANGED")
+        eventFrame:UnregisterEvent("UPDATE_MOUSEOVER_UNIT")
+        self.phaseEventsRegistered = false
     end
 end
 
