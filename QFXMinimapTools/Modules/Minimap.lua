@@ -757,9 +757,10 @@ local QFX_UTILITY_ROW_HEIGHT = 22
 local QFX_UTILITY_ICON_MIN = 12
 local QFX_UTILITY_ICON_MAX = 40
 local QFX_INDICATOR_ORDER = { "calendar", "mail", "crafting", "tracking" }
-local QFX_INDICATOR_OUTLINE_OFFSETS = {
-    { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
-}
+-- Each BLP stores four 128px cells, with an 8px transparent gutter per cell.
+-- Crop the gutter so weight changes never alter the icon's visible scale.
+local QFX_INDICATOR_WEIGHT_COUNT = 4
+local QFX_INDICATOR_WEIGHT_INSET = 8 / 128
 local QFX_INDICATOR_ANCHORS = {
     TOPLEFT = { -1, 1 },
     TOP = { 0, 1 },
@@ -773,10 +774,10 @@ local QFX_INDICATOR_ANCHORS = {
 
 -- Matching white outline art; the calendar adds a live date.
 local QFX_INDICATOR_SPEC = {
-    calendar = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Calendar_White.blp" },
-    mail = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Mail_White.blp" },
-    crafting = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Hammer_White.blp" },
-    tracking = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Magnifier_White.blp" },
+    calendar = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Calendar_Weights.blp" },
+    mail = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Mail_Weights.blp" },
+    crafting = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Hammer_Weights.blp" },
+    tracking = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Magnifier_Weights.blp" },
 }
 
 function QMT:GetCustomIndicatorColor()
@@ -803,11 +804,6 @@ function QMT:ApplyIndicatorColor(btn, pressed)
     local glow = btn.IconHovered and not btn.IconPressed and 0.18 or 0
     local vr, vg, vb = r * factor + (1 - r) * glow, g * factor + (1 - g) * glow, b * factor + (1 - b) * glow
     if btn.Icon then btn.Icon:SetVertexColor(vr, vg, vb, 1) end
-    if btn.OutlineTextures then
-        for _, outline in ipairs(btn.OutlineTextures) do
-            outline:SetVertexColor(vr, vg, vb, 1)
-        end
-    end
     if btn.CalendarDate then btn.CalendarDate:SetTextColor(vr, vg, vb, 1) end
     if btn.HighlightIcon then
         btn.HighlightIcon:SetVertexColor(r, g, b, 1)
@@ -821,20 +817,20 @@ function QMT:ApplyIndicatorSize(btn)
     local size = (btn.IconSize or self:GetUtilityIconSize()) * (btn.IconHovered and 1.12 or 1)
     if btn.Icon then btn.Icon:SetSize(size, size) end
     if btn.HighlightIcon then btn.HighlightIcon:SetSize(size, size) end
-    if btn.OutlineTextures then
-        local weight = self:GetIndicatorWeight()
-        -- Four cardinal copies at a fraction of a pixel widen the strokes
-        -- without filling the small negative spaces (calendar window, mail flap).
-        local step = weight * 0.25
-        for i, outline in ipairs(btn.OutlineTextures) do
-            local offset = QFX_INDICATOR_OUTLINE_OFFSETS[i]
-            outline:ClearAllPoints()
-            outline:SetPoint("CENTER", btn, "CENTER", offset[1] * step, offset[2] * step)
-            outline:SetSize(size, size)
-            if weight > 0 then outline:Show() else outline:Hide() end
-        end
-    end
+    self:ApplyIndicatorWeight(btn)
     if btn.CalendarDay then self:UpdateCalendarDate(btn, btn.CalendarDay) end
+end
+
+function QMT:ApplyIndicatorWeight(btn)
+    if not btn or not btn.UsesWeightStrip then return end
+    local weight = self:GetIndicatorWeight()
+    if btn.AppliedWeight == weight then return end
+    local inset = QFX_INDICATOR_WEIGHT_INSET
+    local left = (weight + inset) / QFX_INDICATOR_WEIGHT_COUNT
+    local right = (weight + 1 - inset) / QFX_INDICATOR_WEIGHT_COUNT
+    if btn.Icon then btn.Icon:SetTexCoord(left, right, inset, 1 - inset) end
+    if btn.HighlightIcon then btn.HighlightIcon:SetTexCoord(left, right, inset, 1 - inset) end
+    btn.AppliedWeight = weight
 end
 
 function QMT:SetIndicatorHovered(btn, hovered)
@@ -902,6 +898,12 @@ end
 function QMT:GetIndicatorWeight()
     local weight = tonumber(self.db and self.db.minimap and self.db.minimap.indicatorWeight) or 2
     return Clamp(math.floor(weight + 0.5), 0, 3)
+end
+
+function QMT:GetIndicatorWeightLabel()
+    local labels = { L.INDICATOR_WEIGHT_THIN, L.INDICATOR_WEIGHT_REGULAR,
+        L.INDICATOR_WEIGHT_MEDIUM, L.INDICATOR_WEIGHT_BOLD }
+    return labels[self:GetIndicatorWeight() + 1]
 end
 
 function QMT:SetIndicatorWeight(weight)
@@ -992,6 +994,7 @@ function QMT:CreateIndicatorButton(key)
     local parent = UIParent or Minimap
     local template = BackdropTemplateMixin and "BackdropTemplate" or nil
     local btn = CreateFrame("Button", "QFXMinimapToolsIndicator_" .. key, parent, template)
+    btn.IndicatorKey = key
     local buttonSize = self:GetIndicatorButtonSize()
     btn:SetSize(buttonSize, buttonSize)
     btn:SetFrameStrata("HIGH")
@@ -1012,19 +1015,6 @@ function QMT:CreateIndicatorButton(key)
     btn.Icon = btn:CreateTexture(nil, "ARTWORK")
     btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
     btn.Icon:SetSize(iconSize, iconSize)
-
-    -- Offset copies of the same silhouette behind the main icon. This thickens
-    -- the stroke without changing the icon size or requiring a second art set.
-    local _, fallback = self:GetIndicatorArt(key)
-    btn.OutlineTextures = {}
-    for i = 1, #QFX_INDICATOR_OUTLINE_OFFSETS do
-        local outline = btn:CreateTexture(nil, "ARTWORK", nil, -1)
-        outline:SetPoint("CENTER", btn, "CENTER", 0, 0)
-        outline:SetSize(iconSize, iconSize)
-        QFXSetTextureOrAtlas(outline, nil, fallback)
-        outline:Hide()
-        btn.OutlineTextures[i] = outline
-    end
 
     if key == "calendar" then
         btn.CalendarDate = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -1079,12 +1069,16 @@ end
 
 function QMT:ShowIndicatorIcon(btn, atlas, fallback)
     if not btn then return end
+    local spec = QFX_INDICATOR_SPEC[btn.IndicatorKey]
+    btn.UsesWeightStrip = not atlas and spec and fallback == spec.fallback or false
+    btn.AppliedWeight = nil
     local size = self:GetUtilityIconSize()
     if btn.Icon then
         btn.Icon:ClearAllPoints()
         btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
         btn.Icon:SetSize(size, size)
         QFXSetTextureOrAtlas(btn.Icon, atlas, fallback)
+        if not atlas and not btn.UsesWeightStrip then btn.Icon:SetTexCoord(0, 1, 0, 1) end
         btn.Icon:SetSize(size, size)
         btn.Icon:Show()
     end
@@ -1092,13 +1086,8 @@ function QMT:ShowIndicatorIcon(btn, atlas, fallback)
         btn.HighlightIcon:ClearAllPoints()
         btn.HighlightIcon:SetPoint("CENTER", btn, "CENTER", 0, 0)
         QFXSetTextureOrAtlas(btn.HighlightIcon, atlas, fallback)
+        if not atlas and not btn.UsesWeightStrip then btn.HighlightIcon:SetTexCoord(0, 1, 0, 1) end
         btn.HighlightIcon:SetSize(size, size)
-    end
-    if btn.OutlineTextures then
-        for _, outline in ipairs(btn.OutlineTextures) do
-            QFXSetTextureOrAtlas(outline, atlas, fallback)
-            outline:SetSize(size, size)
-        end
     end
     self:ApplyIndicatorColor(btn)
     btn.IconSize = size

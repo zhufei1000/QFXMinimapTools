@@ -206,9 +206,13 @@ local function AddIndicatorPage(f, page)
         function() return QMT:GetUtilityIconSize() end, function(value) QMT:SetIndicatorSize(value) end,
         function(value) return tostring(value) .. " px" end, function() end, L.INDICATOR_SIZE_TIP)
     y = y - 64
-    f.indicatorWeightSlider = MakeControl(f, "minimapDependentControls", UI.CreateSlider, s, L.INDICATOR_WEIGHT, 18, y, 132, 220, 0, 3, 1,
-        function() return QMT:GetIndicatorWeight() end, function(value) QMT:SetIndicatorWeight(value) end,
-        function(value) return tostring(value) end, function() end, L.INDICATOR_WEIGHT_TIP)
+    f.indicatorWeightDropdown = MakeControl(f, "minimapDependentControls", UI.CreateDropdown, s, L.INDICATOR_WEIGHT, 18, y, 132, 170, {
+        {key = 0, label = L.INDICATOR_WEIGHT_THIN},
+        {key = 1, label = L.INDICATOR_WEIGHT_REGULAR},
+        {key = 2, label = L.INDICATOR_WEIGHT_MEDIUM},
+        {key = 3, label = L.INDICATOR_WEIGHT_BOLD},
+    }, function() return QMT:GetIndicatorWeightLabel() end,
+    function(value) QMT:SetIndicatorWeight(value) end, function() end, L.INDICATOR_WEIGHT_TIP)
     y = y - 64
     f.indicatorSpacingSlider = MakeControl(f, "minimapDependentControls", UI.CreateSlider, s, L.INDICATOR_SPACING, 18, y, 132, 220, 0, 24, 1,
         function() return QMT:GetIndicatorSpacing() end, function(value) QMT:SetIndicatorSpacing(value) end,

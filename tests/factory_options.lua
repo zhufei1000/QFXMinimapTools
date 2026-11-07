@@ -122,6 +122,11 @@ Q.GetIndicatorAnchorLabel = function() return Q.L.INDICATOR_ANCHOR_Q end
 Q.GetIndicatorLayerLabel = function() return Q.L.INDICATOR_LAYER_OUTSIDE end
 Q.GetUtilityIconSize = function() return Q.db.minimap.indicatorSize end
 Q.GetIndicatorWeight = function() return Q.db.minimap.indicatorWeight end
+Q.GetIndicatorWeightLabel = function()
+    return ({ Q.L.INDICATOR_WEIGHT_THIN, Q.L.INDICATOR_WEIGHT_REGULAR,
+        Q.L.INDICATOR_WEIGHT_MEDIUM, Q.L.INDICATOR_WEIGHT_BOLD })[Q:GetIndicatorWeight() + 1]
+end
+Q.SetIndicatorWeight = function(_, weight) Q.db.minimap.indicatorWeight = weight end
 Q.GetIndicatorSpacing = function() return Q.db.minimap.indicatorSpacing end
 local status = "Gathering status"
 Q.GetGatheringProfessionStatusText = function() return status end
@@ -156,6 +161,11 @@ if mode == "late" then attachManager(); Q:ShowOptions() end
 if mode == "legacy" or mode == "failed" then
     assert(not QFXWidgets and #templates > 0)
     assert(loads == (mode == "failed" and 1 or 0))
+    local selector = assert(Q.optionsFrame.indicatorWeightDropdown)
+    assert(selector:GetText() == Q:GetIndicatorWeightLabel())
+    selector.qfxMenu.children[1]:Click()
+    assert(Q.db.minimap.indicatorWeight == 0 and selector:GetText() == Q.L.INDICATOR_WEIGHT_THIN,
+        "legacy selector must retain the zero-valued Thin option")
     Q:ToggleOptions(); assert(not Q.optionsFrame:IsShown())
     print("PASS: " .. mode .. " " .. locale .. " fallback and first toggle")
     return
@@ -196,6 +206,19 @@ Q:ToggleOptions(); assert(not f:IsShown() and not dialog:IsShown())
 local frameCount, refreshCount = #frames, #W._refresh
 Q:ToggleOptions(); assert(Q.optionsFrame == f and f:IsShown() and loads == 1)
 assert(#frames == frameCount and #W._refresh == refreshCount, "reopening must reuse all controls")
+nav("indicators")
+local weightSelector = find(f.pages.indicators, Q.L.INDICATOR_WEIGHT)._leftRegion._control
+for weight = 0, 3 do
+    weightSelector._openMenu()
+    local option = assert(walk(UIParent, function(node)
+        return node._key == weight and node:IsVisible() and node:GetScript("OnClick")
+    end), "weight option is missing")
+    option:Click()
+    assert(Q.db.minimap.indicatorWeight == weight and weightSelector._label:GetText() == Q:GetIndicatorWeightLabel())
+end
+Q.db.minimap.enabled = false; Q:RefreshOptionsControlState()
+assert(weightSelector:GetAlpha() == .35)
+Q.db.minimap.enabled = true; Q:RefreshOptionsControlState()
 nav("bag")
 Q.db.bag.enabled = false; Q:RefreshOptionsControlState()
 assert(find(f.pages.bag, Q.L.BUTTON_SCALE)._leftRegion._control:GetAlpha() == .35)
