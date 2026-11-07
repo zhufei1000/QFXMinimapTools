@@ -8,24 +8,5 @@ local function OpenManager(tab)
     return api.OpenAddonSettings("QFXMinimapTools", tab)
 end
 target.TryOpenManager = OpenManager
-if target.ShowOptions then
-    local original = target.ShowOptions
-    target.ShowOptions = function(...)
-        if OpenManager() then return true end
-        return original(...)
-    end
-end
-if target.ToggleOptions then
-    local original = target.ToggleOptions
-    target.ToggleOptions = function(...)
-        if OpenManager() then return true end
-        return original(...)
-    end
-end
-if target.OpenBlizzardSettingsCategory then
-    local original = target.OpenBlizzardSettingsCategory
-    target.OpenBlizzardSettingsCategory = function(...)
-        if OpenManager() then return true end
-        return original(...)
-    end
-end
+-- Keep ShowOptions/ToggleOptions/OpenBlizzardSettingsCategory native. The
+-- manager launches these native windows; it does not replace them.

@@ -6,6 +6,22 @@ local L = setmetatable({}, { __index = function(_, key) return QMT.L and QMT.L[k
 local SafeCall = QMT.SafeCall
 local Print = QMT.Print
 
+local function HideAddonCompartmentEntry()
+    local frame = _G.AddonCompartmentFrame
+    local entries = frame and frame.registeredAddons
+    if type(entries) ~= "table" then return end
+    local title = QMT.TITLE or "QFX Minimap Tools"
+    local addonName = "QFXMinimapTools"
+    for i = #entries, 1, -1 do
+        local entry = entries[i]
+        local text = type(entry) == "table" and (entry.text or entry.name or entry.addonName)
+        if text == addonName or text == title then
+            table.remove(entries, i)
+        end
+    end
+    if frame.UpdateDisplay then pcall(frame.UpdateDisplay, frame) end
+end
+
 -- Init / events
 -- ############################################################
 function QMT:ApplyAll()
@@ -33,6 +49,9 @@ function QMT:Initialize()
     -- Never change the client's global CPU profiling state automatically. The
     -- diagnostic control in Advanced only acts after an explicit user click.
     self:RegisterSettingsCategory()
+    if self.IsForever and self:IsForever() then
+        HideAddonCompartmentEntry()
+    end
 
     if not self.eventFrame then
         self.eventFrame = CreateFrame("Frame")
@@ -53,6 +72,9 @@ function QMT:Initialize()
         -- Button-bag restore/rescan work must always complete after combat, even
         -- when the optional flight-center feature is disabled.
         self.eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        -- Edit Mode reapplies the Camelot minimap header layout after the user
+        -- changes header placement or scale. Re-apply our own layout afterwards.
+        pcall(self.eventFrame.RegisterEvent, self.eventFrame, "EDIT_MODE_LAYOUTS_UPDATED")
         self.eventFrame:SetScript("OnEvent", function(_, event, ...)
             if not QMT.db then return end
 
@@ -126,6 +148,13 @@ function QMT:Initialize()
                 return
             end
 
+            if event == "EDIT_MODE_LAYOUTS_UPDATED" then
+                -- Camelot's MinimapClusterMixin:SetHeaderUnderneath() moves the
+                -- header, indicator frame and compartment after Edit Mode saves.
+                SafeCall(QMT.ApplyMinimapSettings, QMT)
+                return
+            end
+
             if event == "UPDATE_PENDING_MAIL" or event == "MAIL_INBOX_UPDATE" or event == "MAIL_CLOSED" then
                 -- ApplyMailFramePosition refreshes the time status icons itself.
                 SafeCall(QMT.ApplyMailFramePosition, QMT)
@@ -143,6 +172,10 @@ function QMT:Initialize()
                 if cvar == "timeMgrUseMilitaryTime" or cvar == "timeMgrUseLocalTime" then
                     SafeCall(QMT.UpdateOneStat, QMT, "time")
                     SafeCall(QMT.UpdateTimeStatusIcons, QMT)
+                elseif cvar == "rotateMinimap" then
+                    -- Camelot reapplies its own minimap mask and compass atlas
+                    -- whenever this CVar changes and would overwrite square mode.
+                    SafeCall(QMT.ApplyMinimapSettings, QMT)
                 end
                 return
             end

@@ -7,6 +7,25 @@ local SafeCall = QMT.SafeCall
 local IsDescendant = QMT.IsDescendant
 local ApplyFontStringFont = QMT.ApplyFontStringFont
 
+local function FitText(fontString, text, maxWidth)
+    if not fontString then return text end
+    text = tostring(text or "")
+    fontString:SetText(text)
+    if not fontString.GetStringWidth then return text end
+    if (fontString:GetStringWidth() or 0) <= maxWidth then return text end
+    local ellipsis = "..."
+    local trimmed = text
+    while #trimmed > 1 do
+        trimmed = trimmed:sub(1, -2)
+        fontString:SetText(trimmed .. ellipsis)
+        if (fontString:GetStringWidth() or 0) <= maxWidth then
+            return trimmed .. ellipsis
+        end
+    end
+    fontString:SetText(ellipsis)
+    return ellipsis
+end
+
 -- Minimap button bag
 -- ############################################################
 local builtinIgnore = {
@@ -185,7 +204,12 @@ function QMT:GetButtonCell(button)
         cell:RegisterForClicks("AnyUp")
         cell:EnableMouse(true)
         cell:SetScript("OnEnter", function(self) ForwardCollectedButtonScript(self, "OnEnter") end)
-        cell:SetScript("OnLeave", function(self) ForwardCollectedButtonScript(self, "OnLeave") end)
+        cell:SetScript("OnLeave", function(self)
+            ForwardCollectedButtonScript(self, "OnLeave")
+            -- Leaving the bag through a collected icon must also arm auto-close;
+            -- the parent frame's OnLeave is not guaranteed to fire in that path.
+            QMT:CheckAutoCloseBag()
+        end)
         cell:SetScript("OnMouseDown", function(self, mouseButton) ForwardCollectedButtonScript(self, "OnMouseDown", mouseButton) end)
         cell:SetScript("OnMouseUp", function(self, mouseButton) ForwardCollectedButtonScript(self, "OnMouseUp", mouseButton) end)
         cell:SetScript("OnClick", function(self, mouseButton, down)
@@ -298,7 +322,8 @@ function QMT:PlaceBagButton()
     self.bagButton:ClearAllPoints()
     self.bagButton:SetPoint("CENTER", Minimap, "LEFT", -1, 0)
     self.bagButton:SetShown(db.enabled and not flightActive)
-    if flightActive and self.bagFrame then self.bagFrame:Hide() end
+    if flightActive and self.bagFrame then self:CloseBag() end
+    SafeCall(self.LayoutIndicatorColumn, self)
 end
 
 
@@ -425,7 +450,7 @@ end
 
 function QMT:LayoutBag()
     if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
-        if self.bagFrame then self.bagFrame:Hide() end
+        self:CloseBag()
         return
     end
     if InCombatLockdown and InCombatLockdown() then
@@ -497,29 +522,73 @@ function QMT:ToggleBag()
     if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then return end
     if not self.db.bag.enabled then return end
     if self.bagFrame:IsShown() then
-        self.bagFrame:Hide()
-        self:HideUnusedButtonCells(nil)
+        self:CloseBag()
     else
         self:RescanButtons(true)
         self.bagFrame:Show()
         self:LayoutBag()
+        if self.db.bag.autoClose then self:StartBagAutoCloseWatcher() end
     end
+end
+
+function QMT:IsMouseOverBag()
+    if not self.bagFrame then return false end
+    if GetMouseFoci then
+        for _, frame in ipairs(GetMouseFoci() or {}) do
+            if IsDescendant(self.bagFrame, frame) then return true end
+            if self.bagButton and IsDescendant(self.bagButton, frame) then return true end
+        end
+        return false
+    end
+    if MouseIsOver then
+        if MouseIsOver(self.bagFrame) then return true end
+        if self.bagButton and MouseIsOver(self.bagButton) then return true end
+        return false
+    end
+    local frame = GetMouseFocus and GetMouseFocus()
+    if not frame then return false end
+    return IsDescendant(self.bagFrame, frame)
+        or (self.bagButton and IsDescendant(self.bagButton, frame))
+        or false
+end
+
+function QMT:CloseBag()
+    if self.bagFrame then self.bagFrame:Hide() end
+    self:StopBagAutoCloseWatcher()
+    self:HideUnusedButtonCells(nil)
+end
+
+function QMT:StartBagAutoCloseWatcher()
+    if not self.bagFrame then return end
+    self.bagAutoCloseElapsed = 0
+    self.bagFrame:SetScript("OnUpdate", function(_, elapsed)
+        QMT:UpdateBagAutoClose(elapsed)
+    end)
+end
+
+function QMT:StopBagAutoCloseWatcher()
+    if self.bagFrame then self.bagFrame:SetScript("OnUpdate", nil) end
+    self.bagAutoCloseElapsed = 0
+end
+
+function QMT:UpdateBagAutoClose(elapsed)
+    if not self.db or not self.db.bag.autoClose or not self.bagFrame or not self.bagFrame:IsShown() then
+        self:StopBagAutoCloseWatcher()
+        return
+    end
+    self.bagAutoCloseElapsed = (self.bagAutoCloseElapsed or 0) + (elapsed or 0)
+    if self.bagAutoCloseElapsed < 0.20 then return end
+    self.bagAutoCloseElapsed = 0
+    if self:IsMouseOverBag() then return end
+    self:CloseBag()
 end
 
 function QMT:CheckAutoCloseBag()
     if not self.db.bag.autoClose or not self.bagFrame or not self.bagFrame:IsShown() then return end
     C_Timer.After(0.15, function()
         if not QMT.bagFrame or not QMT.bagFrame:IsShown() then return end
-        if GetMouseFoci then
-            for _, frame in ipairs(GetMouseFoci() or {}) do
-                if IsDescendant(QMT.bagFrame, frame) or IsDescendant(QMT.bagButton, frame) then return end
-            end
-        elseif GetMouseFocus then
-            local frame = GetMouseFocus()
-            if IsDescendant(QMT.bagFrame, frame) or IsDescendant(QMT.bagButton, frame) then return end
-        end
-        QMT.bagFrame:Hide()
-        QMT:HideUnusedButtonCells(nil)
+        if QMT:IsMouseOverBag() then return end
+        QMT:CloseBag()
     end)
 end
 
@@ -579,9 +648,12 @@ function QMT:ApplyBagSettings()
     self:CreateBagFrames()
     self:PlaceBagButton()
     if not self.db.bag.enabled then
-        if self.bagFrame then self.bagFrame:Hide() end
+        self:CloseBag()
         self:RestoreCollectedButtons()
         return
+    end
+    if self.bagFrame and self.bagFrame:IsShown() then
+        if self.db.bag.autoClose then self:StartBagAutoCloseWatcher() else self:StopBagAutoCloseWatcher() end
     end
     if self.hasScannedButtons then
         self:LayoutBag()
@@ -685,7 +757,18 @@ function QMT:CreateButtonManager()
             cb.Text:SetPoint("LEFT", cb, "RIGHT", 4, 0)
             cb.Text:SetWidth(360)
             cb.Text:SetJustifyH("LEFT")
+            cb.Text:SetWordWrap(false)
         end
+        cb:HookScript("OnEnter", function(row)
+            if row.buttonName then
+                GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+                GameTooltip:AddLine(row.buttonName, 1, 1, 1, true)
+                GameTooltip:Show()
+            end
+        end)
+        cb:HookScript("OnLeave", function(row)
+            if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+        end)
         cb:SetScript("OnClick", function(self)
             if self.buttonName then QMT:SetButtonManualCollect(self.buttonName, self:GetChecked()) end
         end)
@@ -722,7 +805,7 @@ function QMT:RefreshButtonManager()
         row.buttonName = name
         if name then
             row:Show()
-            row.Text:SetText(name)
+            FitText(row.Text, name, 356)
             row:SetChecked(not self:IsButtonManuallyExcluded(name))
         else
             row:Hide()

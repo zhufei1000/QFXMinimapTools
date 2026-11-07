@@ -20,7 +20,7 @@ local statDefaults = {
     coordinates = {point = "BOTTOMRIGHT", rel = "BOTTOMRIGHT", x = -3, y = 3},
 }
 
-local statUpdateOrder = {"location", "time"}
+local statUpdateOrder = {"location", "difficulty", "time"}
 
 local function JustifyFromPoint(point)
     if point and point:find("LEFT") then return "LEFT" end
@@ -366,6 +366,9 @@ function QMT:DetectPhaseID(preferredUnit)
 end
 
 function QMT:GetPhaseIDText()
+    -- Retail shard IDs are not exposed on WoW Forever; the client uses its own
+    -- layer system and the GUID server/spawn fields are obfuscated.
+    if QMT.IsForever and QMT:IsForever() then return "" end
     local phaseID = self:DetectPhaseID()
     local prefix = QMT.ZH and "分片 " or "Shard "
     if not phaseID then
@@ -440,7 +443,9 @@ function QMT:UpdateOneStat(key)
         enabled = false
     elseif key == "coordinates" and (d.time or (self.ShouldUseUtilityRow and self:ShouldUseUtilityRow())) then
         enabled = false
-    elseif key == "difficulty" and self.ShouldUseNativeDifficultyFrame and self:ShouldUseNativeDifficultyFrame() then
+    elseif key == "difficulty" and self.HasNativeDifficultyFrame and self:HasNativeDifficultyFrame() then
+        -- Only hide the text when a real native badge exists. Camelot removes
+        -- MinimapCluster.InstanceDifficulty, so Forever falls through to text.
         enabled = false
     end
     if self:IsOutdoorFlightCenterActive() and key ~= "location" then
@@ -608,11 +613,11 @@ function QMT:RefreshStatUpdaterState()
         QFXCancelTicker(self, "systemTicker")
     end
 
-    if d.time then
+    local minimapEnabled = self.db and self.db.minimap and self.db.minimap.enabled
+    if d.time or minimapEnabled then
         self:EnsureAlignedMinuteTicker(function()
             local cfg = QMT.db and QMT.db.display
-            if not cfg or not cfg.time then return end
-            SafeCall(QMT.UpdateOneStat, QMT, "time")
+            if cfg and cfg.time then SafeCall(QMT.UpdateOneStat, QMT, "time") end
             if QMT.ShouldUseUtilityRow and QMT:ShouldUseUtilityRow() then
                 SafeCall(QMT.UpdateTimeStatusIcons, QMT)
             end
@@ -632,6 +637,7 @@ function QMT:RefreshPhaseEventRegistration()
     -- Target/mouseover are registered only while the phase display is enabled,
     -- so disabling it removes the highest-frequency event source.
     local enabled = self.db and self.db.display and self.db.display.phaseID == true
+        and not (QMT.IsForever and QMT:IsForever())
     if enabled and not self.phaseEventsRegistered then
         eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
         eventFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")

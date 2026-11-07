@@ -11,6 +11,10 @@ local function Now()
 end
 
 function QMT:IsPlayerAirborne()
+    -- WoW Forever is a Classic-era ruleset without skyriding. IsFlying() there
+    -- can describe taxi/flight-path movement, not the outdoor flight feature
+    -- this module was written for, so never use it to center the minimap.
+    if QMT.IsForever and QMT:IsForever() then return false end
     if C_PlayerInfo and C_PlayerInfo.GetGlidingInfo then
         local ok, isGliding = pcall(C_PlayerInfo.GetGlidingInfo)
         if ok and isGliding then return true end
@@ -100,6 +104,7 @@ function QMT:GetGatheringProfessionStatusText()
 end
 
 function QMT:ShouldUseOutdoorFlightCenter()
+    if QMT.IsForever and QMT:IsForever() then return false end
     local db = self.db and self.db.minimap
     if not db or not db.enabled or db.flightCenter ~= true then return false end
     -- When the option is unticked, profession detection must be bypassed entirely.
@@ -176,7 +181,7 @@ function QMT:HideOutdoorFlightMinimapControls()
     SafeCall(self.StopUtilityCoordinatesHoverTicker, self)
 
     if self.bagButton then self.bagButton:Hide() end
-    if self.bagFrame then self.bagFrame:Hide() end
+    if self.CloseBag then self:CloseBag() elseif self.bagFrame then self.bagFrame:Hide() end
 
     -- Keep only the optional zone/location label. All other addon text belongs to
     -- the normal minimap layout and is suspended during flight focus mode.
@@ -259,6 +264,9 @@ function QMT:RestoreOutdoorFlightCenterVisual()
     if state.bagShown and self.db and self.db.bag and self.db.bag.enabled and self.bagFrame then
         self.bagFrame:Show()
         SafeCall(self.LayoutBag, self)
+        if self.db.bag.autoClose and self.StartBagAutoCloseWatcher then
+            SafeCall(self.StartBagAutoCloseWatcher, self)
+        end
     end
     self.flightReturnState = nil
 end
@@ -300,6 +308,7 @@ function QMT:RefreshFlightEventRegistration()
     local frame = self.eventFrame
     if not frame or not frame.RegisterEvent or not frame.UnregisterEvent then return end
     local enabled = self.db and self.db.minimap and self.db.minimap.enabled and self.db.minimap.flightCenter == true
+        and not (QMT.IsForever and QMT:IsForever())
     if enabled and not self.flightEventsRegistered then
         for _, event in ipairs(QFX_FLIGHT_EVENTS) do
             if event == "UNIT_AURA" and frame.RegisterUnitEvent then
@@ -316,6 +325,13 @@ function QMT:RefreshFlightEventRegistration()
 end
 
 function QMT:RefreshOutdoorFlightWatcher()
+    if QMT.IsForever and QMT:IsForever() then
+        if self.flightWatcher then
+            self.flightWatcher:SetScript("OnUpdate", nil)
+            self.flightWatcher.elapsed = 0
+        end
+        return
+    end
     if self.RefreshFlightEventRegistration then self:RefreshFlightEventRegistration() end
     if not self.flightWatcher then
         self.flightWatcher = CreateFrame("Frame")

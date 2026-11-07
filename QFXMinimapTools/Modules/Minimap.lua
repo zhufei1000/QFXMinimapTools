@@ -150,6 +150,18 @@ local roundMinimapArtNames = {
 
 local function LooksLikeRoundMinimapArt(region)
     if not region or not region.GetTexture then return false end
+    -- Camelot's minimap frame is atlas-based (UI-HUD-Minimap-Frame and its
+    -- rotated/underlay variants), so check the atlas name before the file path.
+    if region.GetAtlas then
+        local atlas = region:GetAtlas()
+        if type(atlas) == "string" then
+            atlas = atlas:lower()
+            if atlas:find("minimap", 1, true)
+                and (atlas:find("frame", 1, true) or atlas:find("border", 1, true)) then
+                return true
+            end
+        end
+    end
     local tex = region:GetTexture()
     if type(tex) ~= "string" then return false end
     tex = tex:lower()
@@ -214,6 +226,7 @@ local nativeMinimapControlNames = {
     "MinimapZoneText",
     "MinimapToggleButton",
     "MinimapCompassTexture",
+    "MinimapCompassTextureUnderlay",
     "MiniMapWorldMapButton",
     "MinimapZoomIn",
     "MinimapZoomOut",
@@ -257,8 +270,15 @@ function QMT:CaptureNativeMinimapControls()
         AddObj(MinimapCluster.ZoneTextButton)
         AddObj(MinimapCluster.BorderTop)
         AddObj(MinimapCluster.BorderBottom)
-        AddObj(MinimapCluster.AddonCompartmentFrame)
+        AddObj(_G.AddonCompartmentFrame)
         AddObj(MinimapCluster.MinimapContainer and MinimapCluster.MinimapContainer.Header)
+        -- Camelot-only minimap art and native coordinate text. DielFrame is the
+        -- day/night ring added by Blizzard_Minimap/Camelot/Diel.lua.
+        AddObj(MinimapCluster.DielFrame)
+        AddObj(MinimapCluster.PlayerCoords)
+        local playerCoords = MinimapCluster.MinimapContainer and MinimapCluster.MinimapContainer.PlayerCoords
+        AddObj(playerCoords)
+        if playerCoords then AddObj(playerCoords.CoordText) end
     end
 
     if Minimap then
@@ -294,10 +314,15 @@ function QMT:SetNativeMinimapControlsHidden(hidden)
 end
 
 function QMT:GetSnapInset()
-    local border = self.db and self.db.minimap and tonumber(self.db.minimap.borderSize) or 3
-    -- The border frame extends outside the Minimap. Use a larger automatic inset so
-    -- the border itself plus a small gap remains visible at any UI scale.
-    return math.max(border * 3, 9)
+    local db = self.db and self.db.minimap
+    local inset = 9
+    if db and db.borderEnabled ~= false then
+        inset = math.max((tonumber(db.borderSize) or 3) * 3, 9)
+    end
+    if self.GetIndicatorSnapInset then
+        inset = math.max(inset, self:GetIndicatorSnapInset())
+    end
+    return inset
 end
 
 function QMT:CreateSnapAnchor()
@@ -600,7 +625,11 @@ local function QFXSetTextureOrAtlas(texture, atlas, fallback)
         local ok = pcall(texture.SetAtlas, texture, atlas, false)
         if ok then return end
     end
-    if fallback and texture.SetTexture then SafeCall(texture.SetTexture, texture, fallback) end
+    if fallback and texture.SetTexture then
+        SafeCall(texture.SetTexture, texture, fallback, "CLAMP", "CLAMP", "TRILINEAR")
+    end
+    if texture.SetSnapToPixelGrid then texture:SetSnapToPixelGrid(false) end
+    if texture.SetTexelSnappingBias then texture:SetTexelSnappingBias(0) end
 end
 
 local function QFXClickNativeFrame(frame, mouseButton)
@@ -725,29 +754,230 @@ end
 
 
 local QFX_UTILITY_ROW_HEIGHT = 22
-local QFX_UTILITY_ICON_MIN = 16
-
--- One visual spec for every minimap indicator. Icon art always comes from
--- Blizzard atlases; size, hover and click behavior stay with QMT so all
--- indicators present as a single set. Add new indicators here first.
-local QFX_INDICATOR_SPEC = {
-    calendar = { atlas = "UI-HUD-Calendar-%d-Up", fallback = "Interface\\Calendar\\UI-Calendar-Button" },
-    mail = { atlas = "UI-HUD-Minimap-Mail-Up", fallback = "Interface\\Minimap\\MiniMap-MailIcon" },
-    crafting = { atlas = "UI-HUD-Minimap-CraftingOrder-Up-2x", fallback = "Interface\\Icons\\INV_Inscription_Tradeskill01" },
-    tracking = { atlas = "UI-HUD-Minimap-Tracking-Up", fallback = "Interface\\Minimap\\Tracking\\None" },
+local QFX_UTILITY_ICON_MIN = 12
+local QFX_UTILITY_ICON_MAX = 40
+local QFX_INDICATOR_ORDER = { "calendar", "mail", "crafting", "tracking" }
+local QFX_INDICATOR_OUTLINE_OFFSETS = {
+    { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
+}
+local QFX_INDICATOR_ANCHORS = {
+    TOPLEFT = { -1, 1 },
+    TOP = { 0, 1 },
+    TOPRIGHT = { 1, 1 },
+    LEFT = { -1, 0 },
+    RIGHT = { 1, 0 },
+    BOTTOMLEFT = { -1, -1 },
+    BOTTOM = { 0, -1 },
+    BOTTOMRIGHT = { 1, -1 },
 }
 
-function QMT:GetUtilityIconSize()
-    local fontSize = tonumber(self.db and self.db.display and self.db.display.fontSize) or 12
-    return math.max(QFX_UTILITY_ICON_MIN, math.min(QFX_UTILITY_ROW_HEIGHT, fontSize + 6))
+-- Matching white outline art; the calendar adds a live date.
+local QFX_INDICATOR_SPEC = {
+    calendar = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Calendar_White.blp" },
+    mail = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Mail_White.blp" },
+    crafting = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Hammer_White.blp" },
+    tracking = { fallback = "Interface\\AddOns\\QFXMinimapTools\\Media\\Magnifier_White.blp" },
+}
+
+function QMT:GetCustomIndicatorColor()
+    local c = self.db and self.db.minimap and self.db.minimap.indicatorColor or {}
+    return Clamp(tonumber(c[1]) or 1, 0, 1), Clamp(tonumber(c[2]) or 1, 0, 1), Clamp(tonumber(c[3]) or 1, 0, 1)
 end
 
-function QMT:GetIndicatorArt(key, day)
+function QMT:GetIndicatorColor()
+    local db = self.db and self.db.minimap or {}
+    if db.indicatorColorMode == "CLASS" then
+        local classFile = UnitClass and select(2, UnitClass("player"))
+        local color = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
+        if color then return color.r, color.g, color.b end
+        return 1, 1, 1
+    end
+    return self:GetCustomIndicatorColor()
+end
+
+function QMT:ApplyIndicatorColor(btn, pressed)
+    if not btn then return end
+    if pressed ~= nil then btn.IconPressed = pressed end
+    local r, g, b = self:GetIndicatorColor()
+    local factor = btn.IconPressed and 0.75 or 1
+    local glow = btn.IconHovered and not btn.IconPressed and 0.18 or 0
+    local vr, vg, vb = r * factor + (1 - r) * glow, g * factor + (1 - g) * glow, b * factor + (1 - b) * glow
+    if btn.Icon then btn.Icon:SetVertexColor(vr, vg, vb, 1) end
+    if btn.OutlineTextures then
+        for _, outline in ipairs(btn.OutlineTextures) do
+            outline:SetVertexColor(vr, vg, vb, 1)
+        end
+    end
+    if btn.CalendarDate then btn.CalendarDate:SetTextColor(vr, vg, vb, 1) end
+    if btn.HighlightIcon then
+        btn.HighlightIcon:SetVertexColor(r, g, b, 1)
+        btn.HighlightIcon:SetAlpha(btn.IconHovered and 0.4 or 0.22)
+    end
+    btn.IconR, btn.IconG, btn.IconB = r, g, b
+end
+
+function QMT:ApplyIndicatorSize(btn)
+    if not btn then return end
+    local size = (btn.IconSize or self:GetUtilityIconSize()) * (btn.IconHovered and 1.12 or 1)
+    if btn.Icon then btn.Icon:SetSize(size, size) end
+    if btn.HighlightIcon then btn.HighlightIcon:SetSize(size, size) end
+    if btn.OutlineTextures then
+        local weight = self:GetIndicatorWeight()
+        -- Four cardinal copies at a fraction of a pixel widen the strokes
+        -- without filling the small negative spaces (calendar window, mail flap).
+        local step = weight * 0.25
+        for i, outline in ipairs(btn.OutlineTextures) do
+            local offset = QFX_INDICATOR_OUTLINE_OFFSETS[i]
+            outline:ClearAllPoints()
+            outline:SetPoint("CENTER", btn, "CENTER", offset[1] * step, offset[2] * step)
+            outline:SetSize(size, size)
+            if weight > 0 then outline:Show() else outline:Hide() end
+        end
+    end
+    if btn.CalendarDay then self:UpdateCalendarDate(btn, btn.CalendarDay) end
+end
+
+function QMT:SetIndicatorHovered(btn, hovered)
+    if not btn then return end
+    btn.IconHovered = hovered and true or false
+    self:ApplyIndicatorSize(btn)
+    self:ApplyIndicatorColor(btn, false)
+end
+
+function QMT:SetIndicatorColor(r, g, b)
+    if not self.db or not self.db.minimap then return end
+    self.db.minimap.indicatorColor = {Clamp(tonumber(r) or 1, 0, 1), Clamp(tonumber(g) or 1, 0, 1), Clamp(tonumber(b) or 1, 0, 1)}
+    for _, btn in pairs(self.indicatorButtons or {}) do self:ApplyIndicatorColor(btn) end
+end
+
+function QMT:RefreshIndicatorAppearance()
+    local size = self:GetUtilityIconSize()
+    local buttonSize = self:GetIndicatorButtonSize()
+    for _, btn in pairs(self.indicatorButtons or {}) do
+        btn.IconSize = size
+        btn:SetSize(buttonSize, buttonSize)
+        self:ApplyIndicatorSize(btn)
+        self:ApplyIndicatorColor(btn)
+    end
+    self:LayoutIndicatorColumn()
+end
+
+function QMT:SetIndicatorColorMode(mode)
+    if not self.db or not self.db.minimap then return end
+    self.db.minimap.indicatorColorMode = mode == "CLASS" and "CLASS" or "CUSTOM"
+    self:RefreshIndicatorAppearance()
+end
+
+function QMT:SetIndicatorSize(size)
+    if not self.db or not self.db.minimap then return end
+    self.db.minimap.indicatorSize = Clamp(math.floor((tonumber(size) or 18) + 0.5), QFX_UTILITY_ICON_MIN, QFX_UTILITY_ICON_MAX)
+    self:RefreshIndicatorAppearance()
+    if self.RequestSmartTopRightSnap then self:RequestSmartTopRightSnap() end
+end
+
+function QMT:GetUtilityIconSize()
+    local size = tonumber(self.db and self.db.minimap and self.db.minimap.indicatorSize) or 18
+    return Clamp(math.floor(size + 0.5), QFX_UTILITY_ICON_MIN, QFX_UTILITY_ICON_MAX)
+end
+
+function QMT:GetIndicatorButtonSize()
+    -- Match the visible icon size so a spacing of 0 really means touching
+    -- icons. The hover silhouette is drawn outside the frame and does not
+    -- move the column, so it must not reserve invisible padding here.
+    return math.max(1, self:GetUtilityIconSize())
+end
+
+function QMT:GetIndicatorSpacing()
+    local spacing = tonumber(self.db and self.db.minimap and self.db.minimap.indicatorSpacing) or 4
+    return Clamp(math.floor(spacing + 0.5), 0, 24)
+end
+
+function QMT:SetIndicatorSpacing(spacing)
+    if not self.db or not self.db.minimap then return end
+    self.db.minimap.indicatorSpacing = Clamp(math.floor((tonumber(spacing) or 4) + 0.5), 0, 24)
+    self:LayoutIndicatorColumn()
+    if self.RequestSmartTopRightSnap then self:RequestSmartTopRightSnap() end
+end
+
+function QMT:GetIndicatorWeight()
+    local weight = tonumber(self.db and self.db.minimap and self.db.minimap.indicatorWeight) or 2
+    return Clamp(math.floor(weight + 0.5), 0, 3)
+end
+
+function QMT:SetIndicatorWeight(weight)
+    if not self.db or not self.db.minimap then return end
+    self.db.minimap.indicatorWeight = Clamp(math.floor((tonumber(weight) or 2) + 0.5), 0, 3)
+    self:RefreshIndicatorAppearance()
+end
+
+function QMT:GetIndicatorAnchor()
+    local anchor = self.db and self.db.minimap and self.db.minimap.indicatorAnchor or "Q"
+    if anchor ~= "Q" and not QFX_INDICATOR_ANCHORS[anchor] then return "Q" end
+    return anchor
+end
+
+function QMT:GetIndicatorLayer()
+    local layer = self.db and self.db.minimap and self.db.minimap.indicatorLayer or "OUTSIDE"
+    if layer ~= "ON" and layer ~= "OUTSIDE" and layer ~= "INSIDE" then return "OUTSIDE" end
+    return layer
+end
+
+function QMT:GetIndicatorAnchorLabel()
+    local key = self:GetIndicatorAnchor()
+    local labels = {
+        Q = L.INDICATOR_ANCHOR_Q,
+        TOPLEFT = L.INDICATOR_ANCHOR_TOPLEFT,
+        TOP = L.INDICATOR_ANCHOR_TOP,
+        TOPRIGHT = L.INDICATOR_ANCHOR_TOPRIGHT,
+        LEFT = L.INDICATOR_ANCHOR_LEFT,
+        RIGHT = L.INDICATOR_ANCHOR_RIGHT,
+        BOTTOMLEFT = L.INDICATOR_ANCHOR_BOTTOMLEFT,
+        BOTTOM = L.INDICATOR_ANCHOR_BOTTOM,
+        BOTTOMRIGHT = L.INDICATOR_ANCHOR_BOTTOMRIGHT,
+    }
+    return labels[key] or key
+end
+
+function QMT:GetIndicatorLayerLabel()
+    local key = self:GetIndicatorLayer()
+    if key == "ON" then return L.INDICATOR_LAYER_ON end
+    if key == "INSIDE" then return L.INDICATOR_LAYER_INSIDE end
+    return L.INDICATOR_LAYER_OUTSIDE
+end
+
+function QMT:GetIndicatorSnapInset()
+    local db = self.db and self.db.minimap
+    if not db then return 0 end
+    local anchor = self:GetIndicatorAnchor()
+    if anchor == "Q" then return 0 end
+    local normal = QFX_INDICATOR_ANCHORS[anchor]
+    if not normal then return 0 end
+    local layer = self:GetIndicatorLayer()
+    if layer ~= "OUTSIDE" and layer ~= "ON" then return 0 end
+    -- Only top/right anchors can push icons past the top-right screen edge.
+    if normal[1] <= 0 and normal[2] <= 0 then return 0 end
+    local iconSize = self:GetUtilityIconSize()
+    local border = (db.square and db.borderEnabled ~= false) and (tonumber(db.borderSize) or 3) or 0
+    local extra = (layer == "OUTSIDE" and iconSize or iconSize * 0.5) + border
+    local direction = db.indicatorDirection
+    local count = 0
+    if self.indicatorButtons then
+        for _, key in ipairs(QFX_INDICATOR_ORDER) do
+            local btn = self.indicatorButtons[key]
+            if btn and btn:IsShown() then count = count + 1 end
+        end
+    end
+    local extraSteps = 0
+    if count > 1 then
+        if normal[1] > 0 and direction == "RIGHT" then extraSteps = count - 1 end
+        if normal[2] > 0 and direction == "UP" then extraSteps = math.max(extraSteps, count - 1) end
+    end
+    return extra + extraSteps * (iconSize + self:GetIndicatorSpacing()) + 6
+end
+
+function QMT:GetIndicatorArt(key)
     local spec = QFX_INDICATOR_SPEC[key]
     if not spec then return nil, nil end
-    if key == "calendar" then
-        return spec.atlas:format(day or (tonumber(date and date("%d")) or 1)), spec.fallback
-    end
     return spec.atlas, spec.fallback
 end
 
@@ -762,7 +992,8 @@ function QMT:CreateIndicatorButton(key)
     local parent = UIParent or Minimap
     local template = BackdropTemplateMixin and "BackdropTemplate" or nil
     local btn = CreateFrame("Button", "QFXMinimapToolsIndicator_" .. key, parent, template)
-    btn:SetSize(QFX_UTILITY_ROW_HEIGHT, QFX_UTILITY_ROW_HEIGHT)
+    local buttonSize = self:GetIndicatorButtonSize()
+    btn:SetSize(buttonSize, buttonSize)
     btn:SetFrameStrata("HIGH")
     btn:SetFrameLevel(360)
     btn:SetHitRectInsets(-3, -3, -3, -3)
@@ -782,53 +1013,195 @@ function QMT:CreateIndicatorButton(key)
     btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
     btn.Icon:SetSize(iconSize, iconSize)
 
-    -- One shared hover treatment for every indicator: a subtle white ADD layer
-    -- instead of per-icon Blizzard highlight atlases, which never match each other.
+    -- Offset copies of the same silhouette behind the main icon. This thickens
+    -- the stroke without changing the icon size or requiring a second art set.
+    local _, fallback = self:GetIndicatorArt(key)
+    btn.OutlineTextures = {}
+    for i = 1, #QFX_INDICATOR_OUTLINE_OFFSETS do
+        local outline = btn:CreateTexture(nil, "ARTWORK", nil, -1)
+        outline:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        outline:SetSize(iconSize, iconSize)
+        QFXSetTextureOrAtlas(outline, nil, fallback)
+        outline:Hide()
+        btn.OutlineTextures[i] = outline
+    end
+
+    if key == "calendar" then
+        btn.CalendarDate = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        btn.CalendarDate:SetJustifyH("CENTER")
+        btn.CalendarDate:SetJustifyV("MIDDLE")
+        btn.CalendarDate:SetWordWrap(false)
+        btn.CalendarDate:SetTextColor(1, 1, 1, 1)
+        btn.CalendarDate:SetShadowOffset(0, 0)
+    end
+
+    -- Reuse the icon's alpha silhouette so hover never fills its transparent body.
     btn.HighlightIcon = btn:CreateTexture(nil, "HIGHLIGHT")
     btn.HighlightIcon:SetPoint("CENTER", btn, "CENTER", 0, 0)
     btn.HighlightIcon:SetSize(iconSize, iconSize)
-    btn.HighlightIcon:SetTexture("Interface\\Buttons\\WHITE8X8")
     btn.HighlightIcon:SetBlendMode("ADD")
     btn.HighlightIcon:SetAlpha(0.22)
     btn:SetHighlightTexture(btn.HighlightIcon)
 
     btn:HookScript("OnMouseDown", function(self)
-        if self.Icon then self.Icon:SetVertexColor(0.75, 0.75, 0.75, 1) end
+        QMT:ApplyIndicatorColor(self, true)
     end)
     btn:HookScript("OnMouseUp", function(self)
-        if self.Icon then self.Icon:SetVertexColor(self.IconR or 1, self.IconG or 1, self.IconB or 1, 1) end
+        QMT:ApplyIndicatorColor(self, false)
     end)
     btn:SetScript("OnLeave", function(self)
-        if self.Icon then self.Icon:SetVertexColor(self.IconR or 1, self.IconG or 1, self.IconB or 1, 1) end
+        QMT:SetIndicatorHovered(self, false)
         GameTooltip:Hide()
+    end)
+    btn:SetScript("OnHide", function(self)
+        QMT:SetIndicatorHovered(self, false)
     end)
     btn:Hide()
     self.indicatorButtons[key] = btn
     return btn
 end
 
-function QMT:ShowIndicatorIcon(btn, atlas, fallback, r, g, b)
+function QMT:UpdateCalendarDate(btn, day)
+    if not btn or not btn.CalendarDate then return end
+    btn.CalendarDay = day
+    local size = (btn.IconSize or self:GetUtilityIconSize()) * (btn.IconHovered and 1.12 or 1)
+    local d = self.db and self.db.display or {}
+    local font = self.ResolveFontPath(d.font)
+    local text = btn.CalendarDate
+    self.ApplyFontStringFont(text, font, math.floor(size * 0.48 + 0.5), "")
+    text:ClearAllPoints()
+    -- The blank body spans y=10..20 in the original 24x24 vector.
+    text:SetPoint("CENTER", btn.Icon, "CENTER", 0, -size * 3 / 24)
+    text:SetSize(size * 14 / 24, size * 10 / 24)
+    text:SetText(tostring(day))
+    text:Show()
+end
+
+function QMT:ShowIndicatorIcon(btn, atlas, fallback)
     if not btn then return end
     local size = self:GetUtilityIconSize()
-    local ir, ig, ib = r or 1, g or 1, b or 1
     if btn.Icon then
         btn.Icon:ClearAllPoints()
         btn.Icon:SetPoint("CENTER", btn, "CENTER", 0, 0)
         btn.Icon:SetSize(size, size)
         QFXSetTextureOrAtlas(btn.Icon, atlas, fallback)
         btn.Icon:SetSize(size, size)
-        btn.Icon:SetVertexColor(ir, ig, ib, 1)
         btn.Icon:Show()
     end
     if btn.HighlightIcon then
         btn.HighlightIcon:ClearAllPoints()
         btn.HighlightIcon:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        QFXSetTextureOrAtlas(btn.HighlightIcon, atlas, fallback)
         btn.HighlightIcon:SetSize(size, size)
-        btn.HighlightIcon:SetVertexColor(1, 1, 1, 1)
     end
-    btn.IconR, btn.IconG, btn.IconB = ir, ig, ib
+    if btn.OutlineTextures then
+        for _, outline in ipairs(btn.OutlineTextures) do
+            QFXSetTextureOrAtlas(outline, atlas, fallback)
+            outline:SetSize(size, size)
+        end
+    end
+    self:ApplyIndicatorColor(btn)
     btn.IconSize = size
-    btn:SetSize(QFX_UTILITY_ROW_HEIGHT, QFX_UTILITY_ROW_HEIGHT)
+    self:ApplyIndicatorSize(btn)
+    local buttonSize = self:GetIndicatorButtonSize()
+    btn:SetSize(buttonSize, buttonSize)
+end
+
+function QMT:LayoutIndicatorColumn()
+    if not Minimap or not self.indicatorButtons then return end
+    local minimapDB = self.db and self.db.minimap or {}
+    local direction = minimapDB.indicatorDirection
+    if direction ~= "UP" and direction ~= "DOWN" and direction ~= "LEFT" and direction ~= "RIGHT" then
+        direction = "DOWN"
+    end
+    local spacing = self:GetIndicatorSpacing()
+    local level = math.max((Minimap:GetFrameLevel() or 0) + 43,
+        (self.bagButton and self.bagButton:GetFrameLevel() or 0) + 1)
+
+    local function Place(btn, relativeTo, relativePoint, x, y)
+        btn:SetParent(Minimap)
+        btn:SetFrameStrata("HIGH")
+        btn:SetFrameLevel(level)
+        btn:SetHitRectInsets(-3, -3, -3, -3)
+        btn:ClearAllPoints()
+        btn:SetPoint("CENTER", relativeTo, relativePoint, x, y)
+        self:StripIconBackgroundAndBorder(btn)
+    end
+
+    if self:GetIndicatorAnchor() == "Q" then
+        -- Existing behavior: grow away from the Q button in the chosen direction.
+        local q = self.bagButton and self.bagButton:IsShown() and self.bagButton or nil
+        local previous = q or Minimap
+        local relativePoint = q and "CENTER" or "LEFT"
+        local baseX = q and 0 or -1
+        local previousWidth = q and q:GetWidth() or 0
+        local previousHeight = q and q:GetHeight() or 0
+        for _, key in ipairs(QFX_INDICATOR_ORDER) do
+            local btn = self.indicatorButtons[key]
+            if btn and btn:IsShown() then
+                local x, y = baseX, 0
+                if direction == "UP" or direction == "DOWN" then
+                    if previousHeight > 0 then
+                        local offset = (previousHeight + btn:GetHeight()) * 0.5 + spacing
+                        y = (direction == "UP" and 1 or -1) * offset
+                    end
+                elseif previousWidth > 0 then
+                    local offset = (previousWidth + btn:GetWidth()) * 0.5 + spacing
+                    x = (direction == "RIGHT" and 1 or -1) * offset
+                end
+                Place(btn, previous, relativePoint, x, y)
+                previous = btn
+                previousWidth = btn:GetWidth()
+                previousHeight = btn:GetHeight()
+                relativePoint = "CENTER"
+                baseX = 0
+            end
+        end
+        return
+    end
+
+    -- Free placement on one of the eight minimap anchors. The layer controls
+    -- whether the first icon is centered on, outside, or inside the square border.
+    local normal = QFX_INDICATOR_ANCHORS[self:GetIndicatorAnchor()]
+    local iconSize = self:GetUtilityIconSize()
+    local mapW = Minimap.GetWidth and Minimap:GetWidth() or 0
+    local mapH = Minimap.GetHeight and Minimap:GetHeight() or 0
+    if mapW <= 0 then mapW = 198 end
+    if mapH <= 0 then mapH = 198 end
+    local border = 0
+    if minimapDB.square and minimapDB.borderEnabled ~= false then
+        border = tonumber(minimapDB.borderSize) or 3
+    end
+    local layer = self:GetIndicatorLayer()
+    local pad
+    if layer == "OUTSIDE" then
+        pad = iconSize * 0.5 + border
+    elseif layer == "INSIDE" then
+        pad = -(iconSize * 0.5 + border)
+    else
+        pad = border
+    end
+    local anchorX = normal[1] * (mapW * 0.5 + (normal[1] ~= 0 and pad or 0))
+    local anchorY = normal[2] * (mapH * 0.5 + (normal[2] ~= 0 and pad or 0))
+    local index = 0
+    for _, key in ipairs(QFX_INDICATOR_ORDER) do
+        local btn = self.indicatorButtons[key]
+        if btn and btn:IsShown() then
+            local step = (iconSize + spacing) * index
+            local x, y = anchorX, anchorY
+            if direction == "UP" then
+                y = anchorY + step
+            elseif direction == "DOWN" then
+                y = anchorY - step
+            elseif direction == "LEFT" then
+                x = anchorX - step
+            else
+                x = anchorX + step
+            end
+            index = index + 1
+            Place(btn, Minimap, "CENTER", x, y)
+        end
+    end
 end
 
 function QMT:ShouldUseUtilityRow()
@@ -1180,38 +1553,52 @@ function QMT:UpdateUtilityPhaseText(skipLayout)
     local d = self.db and self.db.display or {}
     local frame = self:CreateUtilityTextFrame("phase")
     local changed
-    if self:ShouldUseUtilityRow() and d.phaseID then
-        changed = self:SetUtilityText(frame, self:GetUtilityPhaseText(), 42, 1, 1, 1)
-    else
+    if (QMT.IsForever and QMT:IsForever()) or not self:ShouldUseUtilityRow() or not d.phaseID then
         changed = self:HideUtilityText(frame)
+    else
+        changed = self:SetUtilityText(frame, self:GetUtilityPhaseText(), 42, 1, 1, 1)
     end
     if changed and not skipLayout then self:LayoutUtilityRow() end
     return changed
 end
 
+local function IsCalendarDisabledByRuleset()
+    local rules = Enum and Enum.GameRule
+    if not (C_GameRules and C_GameRules.IsGameRuleActive and rules and rules.IngameCalendarDisabled) then
+        return false
+    end
+    local ok, disabled = pcall(C_GameRules.IsGameRuleActive, rules.IngameCalendarDisabled)
+    return ok and disabled == true
+end
+
 function QMT:UpdateTimeStatusIcons(skipLayout)
     local d = self.db and self.db.display or {}
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
-    local canUse = self:ShouldUseUtilityRow() and d.time and Minimap and not flightActive
-    local timeFrame = self.statFrames and self.statFrames.time
-    local canAttachToTime = canUse and timeFrame and timeFrame.IsShown and timeFrame:IsShown()
-    local statusLevel = Minimap and Minimap.GetFrameLevel and ((Minimap:GetFrameLevel() or 0) + 43) or 360
+    -- These indicators are independent of the time text. Turning off "Show
+    -- time" must not hide the calendar, mail, crafting or tracking buttons.
+    local indicatorsUsable = self:ShouldUseUtilityRow() and Minimap and not flightActive
+    -- Some Forever rulesets (Hardcore, self-found, etc.) disable the in-game
+    -- calendar. Do not offer a dead calendar button in that case.
+    local calendarUsable = indicatorsUsable and not IsCalendarDisabledByRuleset()
     local day = tonumber(date and date("%d")) or 1
-    local hasMail = canUse and QFXHasNewMail() or false
-    local hasCrafting = canUse and self:HasCraftingOrderIndicator() or false
+    local hasMail = indicatorsUsable and QFXHasNewMail() or false
+    local hasCrafting = indicatorsUsable and self:HasCraftingOrderIndicator() or false
     local suppressNativeCrafting = self:ShouldSuppressNativeCraftingOrderFrame() and true or false
 
     local signature = table.concat({
-        canUse and "1" or "0",
-        canAttachToTime and "1" or "0",
-        tostring(statusLevel),
+        indicatorsUsable and "1" or "0",
+        calendarUsable and "1" or "0",
         tostring(self:GetUtilityIconSize()),
+        tostring(d.font or "AUTO"),
         tostring(day),
         hasMail and "1" or "0",
         hasCrafting and "1" or "0",
         suppressNativeCrafting and "1" or "0",
     }, "|")
-    if self.timeStatusIconSignature == signature then return end
+    if self.timeStatusIconSignature == signature then
+        self:LayoutIndicatorColumn()
+        return
+    end
     self.timeStatusIconSignature = signature
 
     if suppressNativeCrafting then
@@ -1221,10 +1608,12 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     end
 
     local calendar = self:CreateIndicatorButton("calendar")
-    if canUse then
-        local calendarAtlas, calendarFallback = self:GetIndicatorArt("calendar", day)
-        self:ShowIndicatorIcon(calendar, calendarAtlas, calendarFallback, 1, 1, 1)
+    if calendarUsable then
+        local calendarAtlas, calendarFallback = self:GetIndicatorArt("calendar")
+        self:ShowIndicatorIcon(calendar, calendarAtlas, calendarFallback)
+        self:UpdateCalendarDate(calendar, day)
         calendar:SetScript("OnEnter", function(owner)
+            QMT:SetIndicatorHovered(owner, true)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
             GameTooltip:AddLine(QMT.ZH and "日历" or "Calendar")
             GameTooltip:AddLine(L.CALENDAR_OPEN or (QMT.ZH and "左键打开日历" or "Left-click to open the calendar"), 1, 1, 1)
@@ -1232,17 +1621,7 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
             GameTooltip:Show()
         end)
         calendar:SetScript("OnClick", function(_, button) if button == "LeftButton" and ToggleCalendar then ToggleCalendar() end end)
-        calendar:SetParent(Minimap)
-        calendar:SetFrameStrata("HIGH")
-        if calendar.SetFrameLevel then calendar:SetFrameLevel(statusLevel) end
-        calendar:ClearAllPoints()
-        if timeFrame then
-            calendar:SetPoint("RIGHT", timeFrame, "LEFT", -2, 0)
-        else
-            calendar:SetPoint("BOTTOM", Minimap, "BOTTOM", -28, 3)
-        end
         calendar:Show()
-        self:StripIconBackgroundAndBorder(calendar)
     else
         calendar:Hide()
     end
@@ -1250,13 +1629,15 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     local mail = self:CreateIndicatorButton("mail")
     if hasMail then
         local mailAtlas, mailFallback = self:GetIndicatorArt("mail")
-        self:ShowIndicatorIcon(mail, mailAtlas, mailFallback, 1, 1, 1)
+        self:ShowIndicatorIcon(mail, mailAtlas, mailFallback)
         mail:SetScript("OnEnter", function(owner)
+            QMT:SetIndicatorHovered(owner, true)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
             GameTooltip:AddLine(L.MAIL_PENDING or (QMT.ZH and "有新邮件" or "New mail"))
             GameTooltip:Show()
         end)
         mail:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeMailFrame(), button) end)
+        mail:Show()
     else
         mail:Hide()
     end
@@ -1264,8 +1645,9 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     local crafting = self:CreateIndicatorButton("crafting")
     if hasCrafting then
         local craftingAtlas, craftingFallback = self:GetIndicatorArt("crafting")
-        self:ShowIndicatorIcon(crafting, craftingAtlas, craftingFallback, 1, 1, 1)
+        self:ShowIndicatorIcon(crafting, craftingAtlas, craftingFallback)
         crafting:SetScript("OnEnter", function(owner)
+            QMT:SetIndicatorHovered(owner, true)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
             GameTooltip:AddLine(QMT.ZH and "制造订单" or "Crafting Orders")
             local info = C_CraftingOrders and C_CraftingOrders.GetPersonalOrdersInfo and SafeCall(C_CraftingOrders.GetPersonalOrdersInfo)
@@ -1279,27 +1661,13 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
             GameTooltip:Show()
         end)
         crafting:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeCraftingOrderFrame(), button) end)
+        crafting:Show()
     else
         crafting:Hide()
     end
 
-    local statusAnchor = timeFrame
-    local function AttachStatusIcon(icon)
-        if not icon or not canAttachToTime or not statusAnchor then
-            if icon then icon:Hide() end
-            return
-        end
-        icon:SetParent(Minimap)
-        icon:SetFrameStrata("HIGH")
-        if icon.SetFrameLevel then icon:SetFrameLevel(statusLevel) end
-        icon:ClearAllPoints()
-        icon:SetPoint("LEFT", statusAnchor, "RIGHT", 2, 0)
-        icon:Show()
-        QMT:StripIconBackgroundAndBorder(icon)
-        statusAnchor = icon
-    end
-    AttachStatusIcon(hasMail and mail or nil)
-    AttachStatusIcon(hasCrafting and crafting or nil)
+    self:LayoutIndicatorColumn()
+    if self.RequestSmartTopRightSnap then self:RequestSmartTopRightSnap() end
 end
 
 function QMT:LayoutUtilityRow()
@@ -1545,6 +1913,7 @@ function QMT:GetTrackingIndicator()
     local atlas, fallback = self:GetIndicatorArt("tracking")
     self:ShowIndicatorIcon(btn, atlas, fallback)
     btn:SetScript("OnEnter", function(owner)
+        QMT:SetIndicatorHovered(owner, true)
         GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
         GameTooltip:AddLine(QMT.ZH and "追踪" or "Tracking")
         GameTooltip:AddLine(QMT.ZH and "左键打开追踪菜单" or "Left-click to open tracking menu", 1, 1, 1)
@@ -1567,6 +1936,7 @@ function QMT:ApplyTrackingButtonPosition()
         if tracking and not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, false) end
         self:RestoreNativeTrackingFrame()
         if tracking and flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, true) end
+        self:LayoutIndicatorColumn()
         return
     end
 
@@ -1599,17 +1969,17 @@ function QMT:ApplyTrackingButtonPosition()
     end
 
     if indicator then
-        indicator:SetParent(Minimap)
-        indicator:ClearAllPoints()
-        indicator:SetPoint("TOPRIGHT", Minimap, "TOPRIGHT", 4, 4)
-        indicator:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 42)
         indicator:SetShown(not flightActive)
-        self:StripIconBackgroundAndBorder(indicator)
     end
+    self:LayoutIndicatorColumn()
 end
 
 function QMT:ShouldUseNativeDifficultyFrame()
     return self.db and self.db.minimap and self.db.minimap.enabled and self.db.minimap.square and Minimap
+end
+
+function QMT:HasNativeDifficultyFrame()
+    return #self:GetNativeDifficultyFrames() > 0
 end
 
 function QMT:GetNativeDifficultyFrames()
@@ -2364,8 +2734,17 @@ end
 
 function QMT:ApplySquareBorderStyle()
     if not self.squareBorder or not self.db or not self.db.minimap then return end
+    local db = self.db.minimap
+    if db.borderEnabled == false then
+        self.squareBorderStyleSignature = nil
+        self.squareBorder:Hide()
+        if self.squareBorderLines then
+            for _, tex in pairs(self.squareBorderLines) do tex:Hide() end
+        end
+        return
+    end
     local style = self:GetBorderStyle()
-    local edgeSize = Clamp(tonumber(style.edgeSize or self.db.minimap.borderSize) or 3, 1, 12)
+    local edgeSize = Clamp(tonumber(style.edgeSize or db.borderSize) or 3, 1, 12)
     local signature = table.concat({
         tostring(style.preset or ""),
         tostring(style.edgeFile or ""),
@@ -2413,6 +2792,7 @@ function QMT:ApplySquareBorderStyle()
             pcall(_G.DarkMode.UpdateColor, _G.DarkMode, tex, "ui")
         end
     end
+    self.squareBorder:SetShown(db.enabled and db.square and db.borderEnabled ~= false)
     RegisterQFXSkinTarget(self.squareBorder, "MinimapBorder")
     if self.ApplyNativeControlSkin then self:ApplyNativeControlSkin() end
 end
@@ -2492,7 +2872,7 @@ function QMT:ApplyMinimapSettings()
         self.squareBorder:SetBackdropBorderColor(0, 0, 0, 1)
     end
     self:ApplySquareBorderStyle()
-    self.squareBorder:SetShown(db.enabled and db.square)
+    self.squareBorder:SetShown(db.enabled and db.square and db.borderEnabled ~= false)
     self:ApplyMinimapMoveMode()
     self:ApplyQueueStatusButtonPosition()
     self:ApplyMailFramePosition()
@@ -2516,6 +2896,13 @@ function QMT:ApplyMinimapSettings()
         if db.enabled then
             if db.hideCompartment or self:ShouldCleanSquareMinimap() then AddonCompartmentFrame:Hide() else AddonCompartmentFrame:Show() end
         end
+    end
+
+    -- Camelot anchors DielFrame to MinimapContainer, not Minimap, so it does not
+    -- follow the per-frame minimap scale and would float inside a scaled map.
+    if db.enabled and QMT.IsForever and QMT:IsForever()
+        and MinimapCluster and MinimapCluster.DielFrame then
+        MinimapCluster.DielFrame:Hide()
     end
 
     self:RefreshOutdoorFlightWatcher()

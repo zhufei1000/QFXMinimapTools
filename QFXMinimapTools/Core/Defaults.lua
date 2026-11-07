@@ -19,6 +19,7 @@ local defaults = {
         unclamp = true,
         hideCompartment = true,
         borderSize = 3,
+        borderEnabled = true,
         borderPreset = "AUTO_SKIN",
         borderColor = {0.18, 0.18, 0.18, 1},
         borderEdgeFile = nil,
@@ -32,6 +33,14 @@ local defaults = {
         flightCenterOnlyGathering = true,
         snapX = -9,
         snapY = -9,
+        indicatorDirection = "DOWN",
+        indicatorAnchor = "Q",
+        indicatorLayer = "OUTSIDE",
+        indicatorSize = 18,
+        indicatorSpacing = 4,
+        indicatorWeight = 2,
+        indicatorColorMode = "CUSTOM",
+        indicatorColor = {1, 1, 1},
     },
     bag = {
         enabled = true,
@@ -70,6 +79,15 @@ local defaults = {
     },
 }
 
+-- WoW Forever is a Classic-era ruleset on the modern client. Outdoor flight
+-- center and Retail shard/phase IDs have no meaning there, so start with both
+-- features off instead of showing permanently empty widgets.
+if QMT.IsForever and QMT.IsForever() then
+    defaults.minimap.flightCenter = false
+    defaults.minimap.flightCenterOnlyGathering = false
+    defaults.display.phaseID = false
+end
+
 local function NormalizeCurrentDB(db)
     db.ui = db.ui or {}
     db.ui.language = NormalizeLanguageChoice(db.ui.language)
@@ -86,6 +104,33 @@ local function NormalizeCurrentDB(db)
     db.display.durability = nil
 
     db.minimap = db.minimap or {}
+    if db.minimap.indicatorDirection ~= "UP" and db.minimap.indicatorDirection ~= "DOWN"
+        and db.minimap.indicatorDirection ~= "LEFT" and db.minimap.indicatorDirection ~= "RIGHT" then
+        db.minimap.indicatorDirection = "DOWN"
+    end
+    local anchor = db.minimap.indicatorAnchor
+    if anchor ~= "Q" and anchor ~= "TOPLEFT" and anchor ~= "TOP" and anchor ~= "TOPRIGHT"
+        and anchor ~= "LEFT" and anchor ~= "RIGHT" and anchor ~= "BOTTOMLEFT"
+        and anchor ~= "BOTTOM" and anchor ~= "BOTTOMRIGHT" then
+        db.minimap.indicatorAnchor = "Q"
+    end
+    if db.minimap.indicatorLayer ~= "ON" and db.minimap.indicatorLayer ~= "OUTSIDE"
+        and db.minimap.indicatorLayer ~= "INSIDE" then
+        db.minimap.indicatorLayer = "OUTSIDE"
+    end
+    db.minimap.indicatorSize = math.max(12, math.min(40, math.floor((tonumber(db.minimap.indicatorSize) or 18) + 0.5)))
+    db.minimap.indicatorSpacing = math.max(0, math.min(24, math.floor((tonumber(db.minimap.indicatorSpacing) or 4) + 0.5)))
+    db.minimap.indicatorWeight = math.max(0, math.min(3, math.floor((tonumber(db.minimap.indicatorWeight) or 2) + 0.5)))
+    if db.minimap.indicatorColorMode ~= "CLASS" and db.minimap.indicatorColorMode ~= "CUSTOM" then
+        db.minimap.indicatorColorMode = "CUSTOM"
+    end
+    local iconColor = type(db.minimap.indicatorColor) == "table" and db.minimap.indicatorColor or {}
+    db.minimap.indicatorColor = {}
+    for i = 1, 3 do
+        db.minimap.indicatorColor[i] = math.max(0, math.min(1, tonumber(iconColor[i]) or 1))
+    end
+    if type(db.minimap.borderEnabled) ~= "boolean" then db.minimap.borderEnabled = true end
+    db.minimap.borderSize = math.max(1, math.min(12, tonumber(db.minimap.borderSize) or 3))
     -- Keep the user's feature choices across addon updates. Older builds reset
     -- flightCenter whenever the internal DB version changed, which could make the
     -- gathering restriction appear broken after updating the addon.
@@ -104,6 +149,14 @@ local function NormalizeCurrentDB(db)
     -- Remove the old stored enforcement flag; the advanced-page control now reflects
     -- and changes the live profiler state only when the user explicitly clicks it.
     db.performance.disableCPUProfiling = nil
+
+    -- Keep Forever on the supported feature set even when an old SavedVariables
+    -- file or a copied WTF folder still has these switches enabled.
+    if QMT.IsForever and QMT.IsForever() then
+        db.minimap.flightCenter = false
+        db.minimap.flightCenterOnlyGathering = false
+        db.display.phaseID = false
+    end
 
     db.version = defaults.version
 end
