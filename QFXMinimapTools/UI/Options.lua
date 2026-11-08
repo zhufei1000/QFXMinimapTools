@@ -92,7 +92,6 @@ local function AddOverviewPage(f, page)
     local intro = UI.CreateSection(page, L.OVERVIEW or L.TITLE, 12, -12, 552, 120, L.OVERVIEW_DESC or L.PANEL_DESC)
     UI.CreateButton(intro, L.RESET_MINIMAP_POSITION, 14, -78, 178, 26, function() QMT:ResetMinimapPosition() end, L.RESET_POSITION_TIP)
     UI.CreateButton(intro, L.RESCAN, 204, -78, 124, 26, function() QMT:RescanButtons(true) end)
-    UI.CreateButton(intro, L.BUTTON_MANAGER, 340, -78, 142, 26, function() QMT:ShowButtonManager() end)
 
     local quick = UI.CreateSection(page, L.QUICK_SWITCHES or "Quick switches", 12, -146, 552, 176, L.QUICK_SWITCHES_DESC or "")
     local y = quick.contentTop or -58
@@ -143,18 +142,43 @@ local function AddStatsPage(f, page)
     UI.CreateSlider(s, L.COORDS_DECIMALS or "Coords decimals", 18, -306, 130, 220, 0, 2, 1, function() return QMT.db.display.coordsDecimals or 1 end, function(v) QMT.db.display.coordsDecimals = v end, function(v) return tostring(v) end, RefreshStatsFromOptions)
 end
 
+local function GetPinnedButtonsSummary()
+    local count = QMT:GetPinnedButtonCount()
+    if count == 0 then return L.BUTTON_NONE_SELECTED end
+    return string.format(L.BUTTON_COUNT_SELECTED, count)
+end
+
 local function AddBagPage(f, page)
     local s = UI.CreateSection(page, L.BUTTONS, 12, -12, 552, 474, L.BUTTONS_DESC or "")
     local y = s.contentTop or -58
     f.collectButtonsCheck = UI.CreateCheck(s, L.COLLECT_BUTTONS, 18, y, function() return QMT.db.bag.enabled end, function(v) QMT.db.bag.enabled = v end, 360); y = y - 30
-    f.autoCloseCheck = MakeControl(f, "bagDependentControls", UI.CreateCheck, s, L.AUTO_CLOSE, 18, y, function() return QMT.db.bag.autoClose end, function(v) QMT.db.bag.autoClose = v end, 360); y = y - 54
+    f.autoCloseCheck = MakeControl(f, "bagDependentControls", UI.CreateCheck, s, L.AUTO_CLOSE, 18, y, function() return QMT.db.bag.autoClose end, function(v) QMT.db.bag.autoClose = v end, 360); y = y - 42
+
+    local items = {}
+    local function RefreshItems()
+        QMT:RescanButtons(true)
+        QMT:UpdatePinnableButtonItems(items)
+    end
+    local function AlreadyApplied() end
+    f.pinnedButtonsDropdown = MakeControl(f, "bagDependentControls", UI.CreateDropdown, s,
+        L.PINNED_BUTTONS, 18, y, 184, 220, items, GetPinnedButtonsSummary,
+        function(name, checked) QMT:SetButtonPinned(name, checked) end, AlreadyApplied, L.PINNED_BUTTONS_TIP,
+        function(name) return QMT:IsButtonPinned(name) end, RefreshItems)
+    y = y - 36
+    local positions = {{key = "DOWN", label = L.BUTTON_BELOW_Q}, {key = "UP", label = L.BUTTON_ABOVE_Q}}
+    f.pinnedPositionDropdown = MakeControl(f, "bagDependentControls", UI.CreateDropdown, s,
+        L.PINNED_BUTTON_POSITION, 18, y, 184, 220, positions,
+        function() return QMT.db.bag.pinnedDirection == "UP" and L.BUTTON_ABOVE_Q or L.BUTTON_BELOW_Q end,
+        function(direction) QMT:SetPinnedButtonDirection(direction) end, AlreadyApplied)
+    y = y - 42
     f.buttonScaleSlider = MakeControl(f, "bagDependentControls", UI.CreateSlider, s, L.BUTTON_SCALE, 18, y, 132, 220, 0.7, 1.4, 0.05, function() return QMT.db.bag.buttonScale end, function(v) QMT.db.bag.buttonScale = v end, function(v) return string.format("%.2f", v) end); y = y - 56
     f.buttonsPerRowSlider = MakeControl(f, "bagDependentControls", UI.CreateSlider, s, L.BUTTONS_PER_ROW, 18, y, 132, 220, 1, 10, 1, function() return QMT.db.bag.buttonsPerRow end, function(v) QMT.db.bag.buttonsPerRow = v end, function(v) return tostring(v) end); y = y - 60
 
     UI.CreateButton(s, L.RESCAN, 18, y, 128, 26, function() QMT:RescanButtons(true) end)
-    UI.CreateButton(s, L.BUTTON_MANAGER, 158, y, 142, 26, function() QMT:ShowButtonManager() end)
     y = y - 48
     f.excludeEditBox = MakeControl(f, "bagDependentControls", UI.CreateEditBox, s, L.EXCLUDE, 18, y, 132, 340, function() return QMT.db.bag.exclude or "" end, function(v) QMT.db.bag.exclude = v; QMT:InvalidateExcludeCache() end, function() QMT:RestoreCollectedButtons(); QMT:ApplyAll() end)
+    y = y - 44
+    UI.CreateFont(s, "GameFontDisableSmall", L.BAG_POSITION_TIP, "TOPLEFT", 18, y, 506)
 end
 
 local function AddIndicatorPage(f, page)
@@ -261,12 +285,7 @@ local function AddFlightPage(f, page)
     f.flightGatheringCheck = MakeControl(f, "flightDependentControls", UI.CreateCheck, s, L.FLIGHT_GATHERING_ONLY, 38, y, function() return QMT.db.minimap.flightCenterOnlyGathering end, function(v) QMT.db.minimap.flightCenterOnlyGathering = v end, 420, CommitFlightOptions, L.FLIGHT_GATHERING_ONLY_TIP); y = y - 26
     f.gatheringStatusText = UI.CreateFont(s, "GameFontDisableSmall", "", "TOPLEFT", 64, y, 448)
     f.gatheringStatusText:SetWordWrap(true)
-    function QMT:RefreshGatheringProfessionStatus()
-        if f.gatheringStatusText and self.GetGatheringProfessionStatusText then
-            f.gatheringStatusText:SetText(self:GetGatheringProfessionStatusText())
-        end
-    end
-    QMT:RefreshGatheringProfessionStatus()
+    f.gatheringStatusText:SetText(QMT:GetGatheringProfessionStatusText())
     y = y - 48
     f.flightScaleSlider = MakeControl(f, "flightDependentControls", UI.CreateSlider, s, L.FLIGHT_SCALE, 18, y, 132, 220, 1.00, 3.00, 0.05, function() return QMT.db.minimap.flightScale end, function(v) QMT.db.minimap.flightScale = v end, function(v) return string.format("%.2f", v) end, CommitFlightOptions); y = y - 56
     f.flightAlphaSlider = MakeControl(f, "flightDependentControls", UI.CreateSlider, s, L.FLIGHT_ALPHA, 18, y, 132, 220, 0.10, 1.00, 0.05, function() return QMT.db.minimap.flightAlpha end, function(v) QMT.db.minimap.flightAlpha = v end, function(v) return string.format("%.2f", v) end, CommitFlightOptions); y = y - 56
@@ -279,6 +298,7 @@ local function AddAdvancedPage(f, page)
     UI.CreateDropdown(s, L.UI_LANGUAGE, 18, y, 132, 170, {
         {key = "AUTO", label = L.LANGUAGE_AUTO},
         {key = "zhCN", label = L.LANGUAGE_ZH},
+        {key = "zhTW", label = L.LANGUAGE_ZH_TW},
         {key = "enUS", label = L.LANGUAGE_EN},
     }, function() return QMT:GetLanguageLabel(QMT.db and QMT.db.ui and QMT.db.ui.language or "AUTO") end, function(key) QMT:SetUILanguage(key) end, function() end); y = y - 52
 
@@ -299,7 +319,7 @@ function QMT:GetManagerSettingsPages()
     }
 end
 
-local function SelectPage(f, id)
+function QMT:SelectLegacyOptionsPage(f, id)
     f.selectedPage = id
     for pageID, page in pairs(f.pages or {}) do
         if pageID == id then page:Show() else page:Hide() end
@@ -320,7 +340,7 @@ local function CreateTab(f, id, text, index)
     b:SetPoint("TOPLEFT", f.sidebar, "TOPLEFT", 12, -14 - (index - 1) * 36)
     b:SetSize(126, 30)
     b:SetText(text)
-    b:SetScript("OnClick", function() SelectPage(f, id) end)
+    b:SetScript("OnClick", function() QMT:SelectLegacyOptionsPage(f, id) end)
     f.tabs[id] = b
     return b
 end
@@ -329,6 +349,7 @@ function QMT:RefreshOptionsControlState()
     local f = self.optionsFrame
     local db = self.db
     if not f or not db then return end
+    for _, refresh in ipairs(f.optionRefreshers or {}) do refresh() end
     local minimapEnabled = db.minimap and db.minimap.enabled == true
     local flightEnabled = minimapEnabled and db.minimap and db.minimap.flightCenter == true
     local borderEnabled = minimapEnabled and db.minimap and db.minimap.borderEnabled ~= false
@@ -339,14 +360,21 @@ function QMT:RefreshOptionsControlState()
     UI.SetControlsEnabled(f.borderDependentControls, borderEnabled)
     UI.SetControlsEnabled(f.indicatorLayerControls, indicatorLayerEnabled)
     UI.SetControlsEnabled(f.bagDependentControls, bagEnabled)
+    if f.pinnedButtonsDropdown then f.pinnedButtonsDropdown:SetText(GetPinnedButtonsSummary()) end
     UI.SetControlsEnabled(f.indicatorCustomControls, minimapEnabled and db.minimap.indicatorColorMode ~= "CLASS")
     if f.borderPresetDropdown and self.RefreshBorderPresetControls then self:RefreshBorderPresetControls() end
     if self.RefreshGatheringProfessionStatus then self:RefreshGatheringProfessionStatus() end
 end
 
+function QMT:RefreshGatheringProfessionStatus()
+    local f = self.optionsFrame
+    if f and f.gatheringStatusText then f.gatheringStatusText:SetText(self:GetGatheringProfessionStatusText()) end
+end
+
 function QMT:CreateOptionsFrame()
     if self.optionsFrame then return self.optionsFrame end
-    local f = CreateFrame("Frame", "QFXMinimapToolsOptionsFrame", UIParent, BACKDROP_TEMPLATE)
+    local f = CreateFrame("Frame", nil, UIParent, BACKDROP_TEMPLATE)
+    f.optionRefreshers = {}
     f:SetSize(UI.LAYOUT.panelW, UI.LAYOUT.panelH)
     f:SetPoint("CENTER")
     f:SetFrameStrata("DIALOG")
@@ -403,13 +431,14 @@ function QMT:CreateOptionsFrame()
 
     self.optionsFrame = f
     f:Hide()
-    SelectPage(f, "overview")
-    self:RefreshOptionsControlState()
+    self:SelectLegacyOptionsPage(f, "overview")
+    f:SetScript("OnShow", function() QMT:RefreshOptionsControlState() end)
     return f
 end
 
 function QMT:ShowOptions()
-    self:CreateOptionsFrame():Show()
+    local frame = self:CreateOptionsFrame()
+    if frame:IsShown() then self:RefreshOptionsControlState() else frame:Show() end
 end
 
 function QMT:ToggleOptions()
@@ -554,7 +583,29 @@ function QMT:BuildManagerPage(key, page, context, layout)
         control=Row({type="slider",text=label,min=min,max=max,step=step,valueSuffix=suffix,getValue=get,setValue=Commit(set,apply),tooltip=tip,disabled=function() return Disabled(control) end})
         return control
     end
-    UI.CreateDropdown=function(_,label,_,_,_,_,options,getLabel,set,apply,tip)
+    UI.CreateDropdown=function(_,label,_,_,_,width,options,getLabel,set,apply,tip,isChecked,beforeOpen)
+        if isChecked then
+            local control
+            local cfg = {type = "checkboxDropdown", text = label, width = width, items = options,
+                getFn = isChecked, summaryFn = getLabel, tooltip = tip,
+                disabled = function() return Disabled(control) end}
+            cfg.setFn = function(name, checked)
+                if context.Widgets:IsDisabled(cfg) then return end
+                set(name, checked)
+                QMT:CommitOptions(apply)
+            end
+            control = Row(cfg)
+            local open = control._openMenu
+            if open then
+                control._openMenu = function()
+                    if context.Widgets:IsDisabled(cfg) then return end
+                    beforeOpen()
+                    control._invalidateMenu()
+                    open()
+                end
+            end
+            return control
+        end
         local isLanguage=label==L.UI_LANGUAGE
         local values,order={},{}
         for _, item in ipairs(options or {}) do values[item.key]=item.label; order[#order+1]=item.key end
@@ -591,10 +642,8 @@ function QMT:BuildManagerPage(key, page, context, layout)
         return frame._leftRegion._label
     end
     local builds={overview=AddOverviewPage,minimap=AddMinimapPage,stats=AddStatsPage,indicators=AddIndicatorPage,bag=AddBagPage,flight=AddFlightPage,advanced=AddAdvancedPage}
-    local statusRefresh=QMT.RefreshGatheringProfessionStatus
     local ok,err=pcall(function() assert(builds[key])(controls,page.content) end)
     for name,fn in pairs(saved) do UI[name]=fn end
-    QMT.RefreshGatheringProfessionStatus=statusRefresh
     if not ok then error(err) end
     layout:Finish()
 end

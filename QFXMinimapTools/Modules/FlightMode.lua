@@ -60,7 +60,8 @@ function QMT:RefreshGatheringProfessionCache()
     local primary1, primary2 = GetProfessions()
     local professionIndexes = {primary1, primary2}
     local found = false
-    for _, professionIndex in ipairs(professionIndexes) do
+    for slot = 1, 2 do
+        local professionIndex = professionIndexes[slot]
         if professionIndex then
             local info = {GetProfessionInfo(professionIndex)}
             local first = info[1]
@@ -196,9 +197,6 @@ function QMT:ApplyOutdoorFlightCenterVisual()
     if not Minimap or not UIParent or not self.db or not self.db.minimap then return end
     local db = self.db.minimap
     self:CaptureOutdoorFlightReturnState()
-    self.flightModeActive = true
-    if self.ApplyMinimapMoveMode then SafeCall(self.ApplyMinimapMoveMode, self) end
-
     local flightScale = Clamp(db.flightScale, 1.00, 3.00)
     local flightPosY = Clamp(db.flightPosY, -240, 40)
     local flightAlpha = Clamp(db.flightAlpha, 0.10, 1.00)
@@ -208,6 +206,8 @@ function QMT:ApplyOutdoorFlightCenterVisual()
     Minimap:SetPoint("TOP", UIParent, "TOP", 0, flightPosY)
     if Minimap.SetScale then Minimap:SetScale(flightScale) end
     if Minimap.SetAlpha then Minimap:SetAlpha(flightAlpha) end
+    self.flightModeActive = true
+    if self.ApplyMinimapMoveMode then SafeCall(self.ApplyMinimapMoveMode, self) end
     if Minimap.SetZoom then SafeCall(Minimap.SetZoom, Minimap, 0) end
 
     if self.RefreshMinimapAttachedElements then
@@ -232,21 +232,22 @@ function QMT:RestoreOutdoorFlightCenterVisual()
     if not self.flightModeActive then return end
     local db = self.db and self.db.minimap or {}
     local state = self.flightReturnState or {}
+    if Minimap and Minimap.SetAlpha then Minimap:SetAlpha(state.alpha or 1) end
+    if Minimap and Minimap.SetZoom and type(state.zoom) == "number" then SafeCall(Minimap.SetZoom, Minimap, state.zoom) end
+    if Minimap and Minimap.SetScale then Minimap:SetScale(Clamp(db.scale, 0.50, 2.00)) end
+    if db.enabled then
+        if db.autoSnap then self:ApplySmartTopRightSnap(true) else self:ApplyManualMinimapPosition(true) end
+    end
     self.flightModeActive = false
 
     SafeCall(self.RestoreAllFlightSuppressedFrames, self)
     if self.SetNativeMinimapControlsHidden then
         SafeCall(self.SetNativeMinimapControlsHidden, self, db.enabled and db.square)
     end
-    if Minimap and Minimap.SetAlpha then Minimap:SetAlpha(state.alpha or 1) end
-    if Minimap and Minimap.SetZoom and type(state.zoom) == "number" then SafeCall(Minimap.SetZoom, Minimap, state.zoom) end
-    if Minimap and Minimap.SetScale then Minimap:SetScale(Clamp(db.scale, 0.50, 2.00)) end
-    if self.squareBorder then self.squareBorder:SetShown(db.enabled and db.square) end
-
-    if db.autoSnap then self:ApplySmartTopRightSnap() else self:ApplyManualMinimapPosition() end
+    if self.squareBorder then self.squareBorder:SetShown(db.enabled and db.square and db.borderEnabled ~= false) end
     if self.ApplyMinimapMoveMode then SafeCall(self.ApplyMinimapMoveMode, self) end
     if self.RefreshMinimapAttachedElements then
-        SafeCall(self.RefreshMinimapAttachedElements, self, true, false)
+        SafeCall(self.RefreshMinimapAttachedElements, self, true, true)
     else
         SafeCall(self.ApplyQueueStatusButtonPosition, self)
         SafeCall(self.ApplyMailFramePosition, self)
@@ -272,12 +273,18 @@ function QMT:RestoreOutdoorFlightCenterVisual()
 end
 
 function QMT:UpdateOutdoorFlightCenterState(force)
+    if InCombatLockdown and InCombatLockdown() then
+        if force then self.pendingFlightApply = true end
+        return
+    end
+    force = force or self.pendingFlightApply
     local shouldCenter = self:ShouldUseOutdoorFlightCenter()
     if shouldCenter then
         if force or not self.flightModeActive then self:ApplyOutdoorFlightCenterVisual() end
     elseif self.flightModeActive then
         self:RestoreOutdoorFlightCenterVisual()
     end
+    self.pendingFlightApply = nil
 end
 
 function QMT:RequestOutdoorFlightProbe(duration)

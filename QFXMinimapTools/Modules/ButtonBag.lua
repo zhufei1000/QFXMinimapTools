@@ -6,25 +6,7 @@ local L = setmetatable({}, { __index = function(_, key) return QMT.L and QMT.L[k
 local SafeCall = QMT.SafeCall
 local IsDescendant = QMT.IsDescendant
 local ApplyFontStringFont = QMT.ApplyFontStringFont
-
-local function FitText(fontString, text, maxWidth)
-    if not fontString then return text end
-    text = tostring(text or "")
-    fontString:SetText(text)
-    if not fontString.GetStringWidth then return text end
-    if (fontString:GetStringWidth() or 0) <= maxWidth then return text end
-    local ellipsis = "..."
-    local trimmed = text
-    while #trimmed > 1 do
-        trimmed = trimmed:sub(1, -2)
-        fontString:SetText(trimmed .. ellipsis)
-        if (fontString:GetStringWidth() or 0) <= maxWidth then
-            return trimmed .. ellipsis
-        end
-    end
-    fontString:SetText(ellipsis)
-    return ellipsis
-end
+local Clamp = QMT.Clamp
 
 -- Minimap button bag
 -- ############################################################
@@ -49,22 +31,28 @@ local builtinIgnore = {
     ProfessionsCustomerOrders_MinimapButton = true,
 }
 
-function QMT:RememberButtonName(name)
-    if not name or name == "" or builtinIgnore[name] or name:find("QFXMinimapTools") then return end
-    self.knownButtonNames = self.knownButtonNames or {}
-    self.knownButtonNames[name] = true
+local function IsOwnButton(name)
+    return name and name:find("QFXMinimapTools", 1, true) ~= nil
 end
 
-function QMT:GetKnownButtonList()
+function QMT:RememberButtonName(name, frame)
+    if not name or name == "" or builtinIgnore[name] or IsOwnButton(name) then return end
     self.knownButtonNames = self.knownButtonNames or {}
-    for _, button in ipairs(self.collectedButtons or {}) do
-        local name = button and button.GetName and button:GetName() or nil
-        if name and not builtinIgnore[name] then self:RememberButtonName(name) end
-    end
-    local list = {}
-    for name in pairs(self.knownButtonNames or {}) do table.insert(list, name) end
-    table.sort(list, function(a, b) return a:lower() < b:lower() end)
-    return list
+    local object = frame and frame.dataObject
+    local label = type(object) == "table" and object.label
+    self.knownButtonNames[name] = type(label) == "string" and label ~= "" and label or self.knownButtonNames[name] or true
+end
+
+function QMT:GetButtonDisplayName(name)
+    local key = name:gsub("^LibDBIcon10_", ""):gsub("^Lib_GPI_Minimap_", "")
+    key = key:gsub("[_%-]?[Mm]ini[Mm]ap[Bb]utton$", ""):gsub("[_%-]?[Mm]ini[Mm]ap[Ii]con$", "")
+    key = key:gsub("[_%-]?[Mm]ini[Mm]ap$", "")
+    if key == "" then key = name end
+    local getInfo = C_AddOns and C_AddOns.GetAddOnInfo or GetAddOnInfo
+    local _, title = SafeCall(getInfo, key)
+    local label = self.knownButtonNames and self.knownButtonNames[name]
+    title = type(title) == "string" and title ~= "" and title or type(label) == "string" and label or key
+    return (title:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""))
 end
 
 function QMT:GetExcludeTable()
@@ -95,6 +83,10 @@ end
 
 local function FrameName(frame)
     return frame and frame.GetName and frame:GetName() or nil
+end
+
+local function IsSecret(value)
+    return issecretvalue and issecretvalue(value)
 end
 
 local function CapturePoints(frame)
@@ -135,22 +127,22 @@ function QMT:LooksLikeMinimapButton(frame)
     if frame.IsForbidden and frame:IsForbidden() then return false end
     local name = FrameName(frame)
     if not name or name == "" then return false end
-    if name:find("QFXMinimapTools") then return false end
-    self:RememberButtonName(name)
-    local exclude = self:GetExcludeTable()
-    if exclude[name] then return false end
+    if IsOwnButton(name) then return false end
     local w, h = frame:GetSize()
+    if IsSecret(w) or IsSecret(h) then return false end
     if not w or not h or w < 8 or h < 8 or w > 70 or h > 70 then return false end
     if name:match("^HandyNotes") or name:match("^TomTom") or name:match("^HereBeDragons") or name:match("^GatherMate") then return false end
     if name:match("^LibDBIcon") or name:find("Minimap") or name:find("MiniMap") or name:find("MapIcon") or name:find("MinimapButton") or name:find("MinimapIcon") or name:find("_Minimap") or name:find("%-Minimap") then
-        return true
+        self:RememberButtonName(name, frame)
+        return not self:GetExcludeTable()[name]
     end
     return false
 end
 
 local function SaveButtonHitInfo(button)
     if not button then return nil end
-    local w, h = button.GetSize and button:GetSize()
+    local w, h
+    if button.GetSize then w, h = button:GetSize() end
     local hit
     if button.GetHitRectInsets then
         local l, r, t, b = button:GetHitRectInsets()
@@ -172,8 +164,9 @@ end
 function QMT:MakeCollectedButtonEasyToMouse(button)
     if not button then return end
     local minSize = 30
-    local w, h = button.GetSize and button:GetSize()
-    if w and h and button.SetSize and (w < minSize or h < minSize) then
+    local w, h
+    if button.GetSize then w, h = button:GetSize() end
+    if not IsSecret(w) and not IsSecret(h) and w and h and button.SetSize and (w < minSize or h < minSize) then
         SafeCall(button.SetSize, button, math.max(w, minSize), math.max(h, minSize))
     end
     if button.SetHitRectInsets then
@@ -193,6 +186,18 @@ end
 
 local BAG_FRAME_STRATA = "HIGH"
 local BAG_FRAME_LEVEL = 450
+local PIN_GAP = 2
+local PIN_BAG_GAP = 4
+local Q_HIT_PADDING = 8
+local Q_ICON_SIZE = 16
+local pinnedTextureHooks = setmetatable({}, { __mode = "k" })
+
+local function ApplyBagButtonHitPadding(button, pinTails)
+    -- A pinned column uses the space normally reserved for Q's larger hit area.
+    local top = pinTails and pinTails.UP and 0 or -Q_HIT_PADDING
+    local bottom = pinTails and pinTails.DOWN and 0 or -Q_HIT_PADDING
+    button:SetHitRectInsets(-Q_HIT_PADDING, -Q_HIT_PADDING, top, bottom)
+end
 
 function QMT:GetButtonCell(button)
     if not button or not self.bagFrame then return nil end
@@ -249,7 +254,8 @@ function QMT:RequestBagLayout()
     self.bagLayoutQueued = true
     local function Flush()
         QMT.bagLayoutQueued = false
-        if QMT.db and QMT.db.bag and QMT.db.bag.enabled and QMT.bagFrame and QMT.bagFrame:IsShown() then
+        if QMT.db and QMT.db.bag and QMT.db.bag.enabled and QMT.bagFrame
+            and (QMT.bagFrame:IsShown() or QMT.bagPinFrame) then
             SafeCall(QMT.LayoutBag, QMT)
         end
     end
@@ -260,11 +266,13 @@ function QMT:CreateBagFrames()
     if self.bagButton then return end
     local button = CreateFrame("Button", "QFXMinimapToolsButton", Minimap or UIParent)
     button:SetSize(22, 22)
-    button:SetHitRectInsets(-8, -8, -8, -8)
+    ApplyBagButtonHitPadding(button)
     button:SetFrameStrata("HIGH")
     button:SetFrameLevel(300)
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    -- Fixed Q trigger: no drag registration. It always stays at the left-middle edge.
+    button:RegisterForDrag("LeftButton")
+    -- The Q trigger can be dragged vertically along the left edge. Its saved
+    -- offset decides whether the bag opens upward or downward from the button.
 
     -- No round icon frame: only a clickable Q printed on the left border line.
     button.letter = button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -272,26 +280,45 @@ function QMT:CreateBagFrames()
     button.letter:SetText("Q")
     do
         local font, _, flags = button.letter:GetFont()
-        ApplyFontStringFont(button.letter, font, 16, flags or "OUTLINE")
+        ApplyFontStringFont(button.letter, font, Q_ICON_SIZE, flags or "OUTLINE")
     end
     button.letter:SetTextColor(0.35, 0.70, 1.00, 1)
 
     button:SetScript("OnEnter", function(self)
+        if self.qfxDragging then return end
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine(L.TITLE)
         GameTooltip:AddLine(L.LEFT_TIP, 1, 1, 1)
         GameTooltip:AddLine(L.RIGHT_TIP, 1, 1, 1)
+        GameTooltip:AddLine(L.BAG_DRAG_TIP, 1, 1, 1)
         GameTooltip:Show()
     end)
     button:SetScript("OnLeave", function()
         GameTooltip:Hide()
         QMT:CheckAutoCloseBag()
     end)
-    button:SetScript("OnClick", function(_, mouseButton)
+    button:SetScript("OnClick", function(self, mouseButton)
+        if self.qfxSuppressClick then
+            self.qfxSuppressClick = nil
+            return
+        end
         if mouseButton == "RightButton" then QMT:ToggleOptions() else QMT:ToggleBag() end
     end)
-    button:SetScript("OnDragStart", nil)
-    button:SetScript("OnDragStop", nil)
+    button:SetScript("OnDragStart", function(self)
+        QMT:StartBagButtonDrag(self)
+    end)
+    button:SetScript("OnDragStop", function(self)
+        QMT:StopBagButtonDrag(self)
+    end)
+    button:SetScript("OnShow", function()
+        if QMT.bagPinFrame then
+            QMT.bagPinFrame:Show()
+            QMT:RequestBagLayout()
+        end
+    end)
+    button:SetScript("OnHide", function()
+        if QMT.bagPinFrame then QMT.bagPinFrame:Hide() end
+    end)
     self.bagButton = button
 
     local bag = CreateFrame("Frame", "QFXMinimapToolsBag", UIParent)
@@ -310,17 +337,122 @@ function QMT:CreateBagFrames()
 end
 
 
+function QMT:GetBagButtonDragBounds()
+    local mapH = Minimap and Minimap.GetHeight and Minimap:GetHeight() or 0
+    -- During early login the minimap may not be sized yet. Returning nil keeps
+    -- the saved offset intact instead of clamping it to a temporary zero.
+    if mapH <= 0 then return nil end
+    local buttonH = self.bagButton and self.bagButton.GetHeight and self.bagButton:GetHeight() or 22
+    local limit = math.max(0, (mapH - buttonH) * 0.5)
+    local lower, upper = -limit, limit
+    if self.bagPinExtent then
+        local _, centerY = Minimap:GetCenter()
+        local scale = Minimap:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        if centerY and scale > 0 then
+            local extent = self.bagPinExtent
+            if extent.UP > 0 then upper = math.min(upper, UIParent:GetHeight() / scale - centerY - extent.UP / scale - buttonH * 0.5) end
+            if extent.DOWN > 0 then lower = math.max(lower, -centerY + extent.DOWN / scale + buttonH * 0.5) end
+            if lower > upper then
+                local offset = Clamp((lower + upper) * 0.5, -limit, limit)
+                return offset, offset
+            end
+        end
+    end
+    return lower, upper
+end
+
+function QMT:GetBagButtonOffsetY()
+    local bag = self.db and self.db.bag
+    local offset = tonumber(bag and bag.mainButtonOffsetY) or 0
+    local lower, upper = self:GetBagButtonDragBounds()
+    if lower then offset = Clamp(offset, lower, upper) end
+    return offset
+end
+
+-- Negative offsets sit below the minimap centre, so the bag grows upward;
+-- zero or positive offsets keep the original downward growth.
+function QMT:IsBagExpandingUpward()
+    return self:GetBagButtonOffsetY() < -0.5
+end
+
+function QMT:StartBagButtonDrag(button)
+    if InCombatLockdown and InCombatLockdown() then return end
+    button = button or self.bagButton
+    if not button or not Minimap then return end
+    if button.qfxDragging then return end
+    local _, cursorY = GetCursorPosition()
+    button.qfxDragging = true
+    button.qfxMoved = false
+    button.qfxDragStartCursorY = cursorY
+    button.qfxDragStartOffset = self:GetBagButtonOffsetY()
+    button.qfxDragLastOffset = button.qfxDragStartOffset
+    button.qfxDragUpward = self:IsBagExpandingUpward()
+    button:SetScript("OnUpdate", function() self:UpdateBagButtonDrag() end)
+    if GameTooltip and GameTooltip.Hide then GameTooltip:Hide() end
+end
+
+function QMT:UpdateBagButtonDrag()
+    local button = self.bagButton
+    if not button or not button.qfxDragging or not Minimap then return end
+    if InCombatLockdown and InCombatLockdown() then return end
+    local _, cursorY = GetCursorPosition()
+    if not cursorY or not button.qfxDragStartCursorY then return end
+    local scale = Minimap.GetEffectiveScale and Minimap:GetEffectiveScale() or 1
+    if not scale or scale <= 0 then scale = 1 end
+    local offset = (button.qfxDragStartOffset or 0) + (cursorY - button.qfxDragStartCursorY) / scale
+    local lower, upper = self:GetBagButtonDragBounds()
+    if lower then offset = Clamp(offset, lower, upper) end
+    if math.abs((button.qfxDragLastOffset or 0) - offset) < 0.01 then return end
+    button.qfxDragLastOffset = offset
+    button.qfxMoved = true
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", Minimap, "LEFT", -1, offset)
+    if self.db and self.db.bag then self.db.bag.mainButtonOffsetY = offset end
+    local upward = offset < -0.5
+    if upward ~= button.qfxDragUpward then
+        button.qfxDragUpward = upward
+        if self.bagFrame and self.bagFrame:IsShown() then SafeCall(self.LayoutBag, self) end
+    end
+end
+
+function QMT:StopBagButtonDrag(button)
+    button = button or self.bagButton
+    if not button then return end
+    button:SetScript("OnUpdate", nil)
+    button.qfxDragging = false
+    local moved = button.qfxMoved
+    local draggedOffset = button.qfxDragLastOffset
+    button.qfxMoved = false
+    button.qfxDragStartCursorY = nil
+    button.qfxDragStartOffset = nil
+    button.qfxDragLastOffset = nil
+    if not moved then return end
+    if self.db and self.db.bag then self.db.bag.mainButtonOffsetY = draggedOffset end
+    if not (InCombatLockdown and InCombatLockdown()) then
+        self:PlaceBagButton()
+        if self.bagFrame and self.bagFrame:IsShown() then SafeCall(self.LayoutBag, self) end
+    end
+    -- Swallow the click that follows a real drag; clear it on the next frame
+    -- in case the client does not deliver OnClick after OnDragStop.
+    button.qfxSuppressClick = true
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            if QMT.bagButton then QMT.bagButton.qfxSuppressClick = nil end
+        end)
+    end
+end
+
 function QMT:PlaceBagButton()
     if not self.bagButton or not Minimap then return end
     local db = self.db.bag
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
-    -- Fixed Q trigger: always left-middle on the square minimap border.
-    -- This avoids saved drag offsets placing the bag trigger in odd locations.
+    -- The Q trigger stays on the left edge; only its vertical offset is
+    -- free so the bag can open upward or downward from the button.
     db.mainButtonEdge = "LEFT"
     db.mainButtonOffset = 0
-    db.mainButtonOffsetY = 0
+    local offsetY = self:GetBagButtonOffsetY()
     self.bagButton:ClearAllPoints()
-    self.bagButton:SetPoint("CENTER", Minimap, "LEFT", -1, 0)
+    self.bagButton:SetPoint("CENTER", Minimap, "LEFT", -1, offsetY)
     self.bagButton:SetShown(db.enabled and not flightActive)
     if flightActive and self.bagFrame then self:CloseBag() end
     SafeCall(self.LayoutIndicatorColumn, self)
@@ -329,12 +461,20 @@ end
 
 function QMT:IsButtonCurrentlyOnMinimap(button)
     if not button or not Minimap then return false end
-    if button.IsShown and not button:IsShown() then return false end
+    if button.IsForbidden and button:IsForbidden() then return false end
+    local shown = not button.IsShown or button:IsShown()
+    if IsSecret(shown) or not shown then return false end
     local parent = button.GetParent and button:GetParent()
     if parent == Minimap or parent == MinimapCluster or IsDescendant(Minimap, button) then return true end
-    local bx, by = button.GetCenter and button:GetCenter()
+    if not button.GetCenter then return false end
+    local bx, by = button:GetCenter()
     local mx, my = Minimap:GetCenter()
+    if IsSecret(bx) or IsSecret(by) or IsSecret(mx) or IsSecret(my) then return false end
     if bx and by and mx and my then
+        local buttonScale, mapScale = button:GetEffectiveScale(), Minimap:GetEffectiveScale()
+        if IsSecret(buttonScale) or IsSecret(mapScale) or mapScale <= 0 then return false end
+        local ratio = buttonScale / mapScale
+        bx, by = bx * ratio, by * ratio
         local dx, dy = bx - mx, by - my
         -- Only collect buttons that are actually displayed around the minimap.
         return (dx * dx + dy * dy) <= (220 * 220)
@@ -345,6 +485,7 @@ end
 function QMT:CollectButton(button)
     if not button or self.collectedMap[button] or button == self.bagButton or button == self.bagFrame then return false end
     if InCombatLockdown and InCombatLockdown() then return false end
+    if button.IsForbidden and button:IsForbidden() then return false end
     if button.IsProtected and button:IsProtected() then return false end
     if not self:IsButtonCurrentlyOnMinimap(button) then return false end
     if not self:LooksLikeMinimapButton(button) then return false end
@@ -448,40 +589,165 @@ function QMT:RescanButtons(force)
     self:LayoutBag()
 end
 
+function QMT:RestorePinnedButtonStyle(button, original)
+    local pin = original and original.pinIcon
+    if not pin then return end
+    self:RestoreIconBackgroundAndBorder(button, true)
+    RestorePoints(pin.texture, pin.points, button)
+    pin.texture:SetSize(pin.width, pin.height)
+    RestoreButtonHitInfo(button, original)
+    original.pinIcon = nil
+end
+
+function QMT:ApplyPinnedButtonStyle(button, q)
+    local original = self.originalButtons[button]
+    if not original then return false end
+    local icon = button.icon or button.Icon
+    if original.pinIcon and original.pinIcon.texture ~= icon then
+        self:RestorePinnedButtonStyle(button, original)
+    end
+    if type(icon) ~= "table" or not icon.IsObjectType or not icon:IsObjectType("Texture") then return false end
+    local pin = original.pinIcon
+    if not pin then
+        local width, height = icon:GetSize()
+        if width <= 0 or height <= 0 then return false end
+        pin = {texture = icon, points = CapturePoints(icon), width = width, height = height}
+        original.pinIcon = pin
+    end
+    if hooksecurefunc and button.CreateTexture and not pinnedTextureHooks[button] then
+        -- Skin addons can add a border after the first layout. Wait until the
+        -- new texture has been configured before checking its decoration.
+        hooksecurefunc(button, "CreateTexture", function(source)
+            local saved = QMT.originalButtons and QMT.originalButtons[source]
+            if saved and saved.pinIcon then QMT:RequestBagLayout() end
+        end)
+        pinnedTextureHooks[button] = true
+    end
+    self:StripIconBackgroundAndBorder(button, icon)
+    button:SetSize(q:GetSize())
+    local size = Q_ICON_SIZE / math.max(pin.width, pin.height)
+    icon:ClearAllPoints()
+    icon:SetPoint("CENTER", button, "CENTER", 0, 0)
+    icon:SetSize(pin.width * size, pin.height * size)
+    return true
+end
+
+function QMT:PlaceCollectedButton(button, parent, scale)
+    local cell = self:GetButtonCell(button)
+    cell:SetParent(parent)
+    cell:SetFrameLevel(parent:GetFrameLevel() + 1)
+    cell:ClearAllPoints()
+
+    button:SetParent(cell)
+    button:SetFrameStrata(BAG_FRAME_STRATA)
+    if button.SetFrameLevel then button:SetFrameLevel(cell:GetFrameLevel() + 1) end
+    button:SetScale(scale)
+    self:MakeCollectedButtonEasyToMouse(button)
+    button:ClearAllPoints()
+    button:SetPoint("CENTER", cell, "CENTER", 0, 0)
+    return cell
+end
+
 function QMT:LayoutBag()
     if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
         self:CloseBag()
-        return
     end
     if InCombatLockdown and InCombatLockdown() then
         self.pendingBagLayout = true
         return
     end
-    if not self.bagFrame or not self.bagButton then return end
+    if not self.bagFrame or not self.bagButton or not self.db.bag.enabled then return end
     local db = self.db.bag
     local buttons = {}
+    local pinned = {}
     local exclude = self:GetExcludeTable()
     for _, button in ipairs(self.collectedButtons or {}) do
         local name = FrameName(button)
-        local shown = button and button.IsShown and button:IsShown()
-        if button and name and shown and not exclude[name] then table.insert(buttons, button) end
+        if name and not exclude[name] then
+            local isPinned = self:IsButtonPinned(name)
+            local parent = self.bagFrame
+            if isPinned then
+                if not self.bagPinFrame then
+                    local frame = CreateFrame("Frame", nil, UIParent)
+                    frame:SetFrameStrata(BAG_FRAME_STRATA)
+                    frame:SetFrameLevel(BAG_FRAME_LEVEL)
+                    frame:SetShown(self.bagButton:IsVisible())
+                    self.bagPinFrame = frame
+                end
+                parent = self.bagPinFrame
+            else
+                self:RestorePinnedButtonStyle(button, self.originalButtons[button])
+            end
+            if button:IsShown() then
+                table.insert(isPinned and pinned or buttons, button)
+            elseif button:GetParent() ~= parent then
+                -- Keep a hidden icon under its container so its owner's next
+                -- Show() can fire OnShow even after its old cell is hidden.
+                button:SetParent(parent)
+                button:ClearAllPoints()
+            end
+        end
+    end
+
+    local scale = db.buttonScale or 1
+    local cell = math.floor(30 * scale + 0.5)
+    local activeCells = {}
+    local bagGap = 6
+    local hadPins = self.bagPinExtent ~= nil
+    self.bagPinTails, self.bagPinExtent = nil, nil
+    if #pinned > 0 then
+        local q = self.bagButton
+        local qScale = q:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        local maxWidth = cell
+        local direction = db.pinnedDirection
+        local upward = direction == "UP"
+        local near, far = upward and "BOTTOM" or "TOP", upward and "TOP" or "BOTTOM"
+        local sign = upward and 1 or -1
+        local previous = q
+        local extent = 0
+        for _, button in ipairs(pinned) do
+            local cellFrame = self:PlaceCollectedButton(button, self.bagPinFrame, scale)
+            local width, height
+            if self:ApplyPinnedButtonStyle(button, q) then
+                button:SetScale(qScale)
+                width, height = q:GetWidth() * qScale, q:GetHeight() * qScale
+            else
+                width, height = math.max(cell, button:GetWidth() * scale), math.max(cell, button:GetHeight() * scale)
+            end
+            cellFrame:SetSize(width, height)
+            maxWidth = math.max(maxWidth, width)
+            extent = extent + height + PIN_GAP
+            cellFrame:SetPoint(near, previous, far, 0, sign * PIN_GAP)
+            cellFrame:Show()
+            activeCells[button] = true
+            previous = cellFrame
+        end
+        self.bagPinTails = { [direction] = previous }
+        self.bagPinExtent = { UP = upward and extent or 0, DOWN = upward and 0 or extent }
+        bagGap = math.max(bagGap, (maxWidth - q:GetWidth() * qScale) * 0.5 + PIN_BAG_GAP)
+    end
+    if hadPins or self.bagPinExtent then
+        ApplyBagButtonHitPadding(self.bagButton, self.bagPinTails)
+        self:PlaceBagButton()
     end
 
     local total = #buttons
     local cols = math.max(1, math.min(math.floor(db.buttonsPerRow or 8), math.max(total, 1)))
-    local scale = db.buttonScale or 1
-    local cell = math.floor(30 * scale + 0.5)
     local rows = math.max(1, math.ceil(math.max(total, 1) / cols))
     local width = total == 0 and 160 or cols * cell
     local height = total == 0 and 24 or rows * cell
 
     self.bagFrame:SetSize(width, height)
     self.bagFrame:ClearAllPoints()
-    local edge = "LEFT"
-    local onRight = true
-    -- Fixed left-side Q: expand to the OUTSIDE of the minimap, not into the map.
-    -- The bag's right edge attaches to the Q button's left edge, and icons grow leftward.
-    self.bagFrame:SetPoint("TOPRIGHT", self.bagButton, "TOPLEFT", -6, 9)
+    -- EUI-style expansion: when the Q trigger sits in the lower half of the
+    -- minimap, the grid grows upward; otherwise it keeps growing downward.
+    -- Either way the icons stay outside the map on the left.
+    local upward = self:IsBagExpandingUpward()
+    if upward then
+        self.bagFrame:SetPoint("BOTTOMRIGHT", self.bagButton, "BOTTOMLEFT", -bagGap, -9)
+    else
+        self.bagFrame:SetPoint("TOPRIGHT", self.bagButton, "TOPLEFT", -bagGap, 9)
+    end
 
     if self.bagFrame.emptyText then
         self.bagFrame.emptyText:SetShown(total == 0)
@@ -489,31 +755,19 @@ function QMT:LayoutBag()
         self.bagFrame.emptyText:SetPoint("CENTER")
     end
 
-    local activeCells = {}
     for index, button in ipairs(buttons) do
         local col = (index - 1) % cols
         local row = math.floor((index - 1) / cols)
-        local cellFrame = self:GetButtonCell(button)
-        activeCells[button] = true
-        cellFrame:SetParent(self.bagFrame)
-        cellFrame:SetFrameStrata(BAG_FRAME_STRATA)
-        if cellFrame.SetFrameLevel then cellFrame:SetFrameLevel((self.bagFrame:GetFrameLevel() or BAG_FRAME_LEVEL) + 1) end
+        local cellFrame = self:PlaceCollectedButton(button, self.bagFrame, scale)
         cellFrame:SetSize(cell, cell)
-        cellFrame:ClearAllPoints()
-        if onRight then
-            cellFrame:SetPoint("TOPRIGHT", self.bagFrame, "TOPRIGHT", -col * cell, -row * cell)
+        activeCells[button] = true
+        if upward then
+            -- Start at the bottom edge so the first button stays nearest the Q.
+            cellFrame:SetPoint("BOTTOMRIGHT", self.bagFrame, "BOTTOMRIGHT", -col * cell, row * cell)
         else
-            cellFrame:SetPoint("TOPLEFT", self.bagFrame, "TOPLEFT", col * cell, -row * cell)
+            cellFrame:SetPoint("TOPRIGHT", self.bagFrame, "TOPRIGHT", -col * cell, -row * cell)
         end
         cellFrame:Show()
-
-        button:SetParent(cellFrame)
-        button:SetFrameStrata(BAG_FRAME_STRATA)
-        if button.SetFrameLevel then button:SetFrameLevel((cellFrame:GetFrameLevel() or 501) + 1) end
-        button:SetScale(scale)
-        self:MakeCollectedButtonEasyToMouse(button)
-        button:ClearAllPoints()
-        button:SetPoint("CENTER", cellFrame, "CENTER", 0, 0)
     end
     self:HideUnusedButtonCells(activeCells)
 end
@@ -537,15 +791,17 @@ function QMT:IsMouseOverBag()
         for _, frame in ipairs(GetMouseFoci() or {}) do
             if IsDescendant(self.bagFrame, frame) then return true end
             if self.bagButton and IsDescendant(self.bagButton, frame) then return true end
+            if self.bagPinFrame and IsDescendant(self.bagPinFrame, frame) then return true end
         end
         return false
     end
+    local frame = GetMouseFocus and GetMouseFocus()
+    if frame and self.bagPinFrame and IsDescendant(self.bagPinFrame, frame) then return true end
     if MouseIsOver then
         if MouseIsOver(self.bagFrame) then return true end
         if self.bagButton and MouseIsOver(self.bagButton) then return true end
         return false
     end
-    local frame = GetMouseFocus and GetMouseFocus()
     if not frame then return false end
     return IsDescendant(self.bagFrame, frame)
         or (self.bagButton and IsDescendant(self.bagButton, frame))
@@ -555,7 +811,6 @@ end
 function QMT:CloseBag()
     if self.bagFrame then self.bagFrame:Hide() end
     self:StopBagAutoCloseWatcher()
-    self:HideUnusedButtonCells(nil)
 end
 
 function QMT:StartBagAutoCloseWatcher()
@@ -602,6 +857,7 @@ function QMT:RestoreCollectedButtons()
     for _, button in ipairs(self.collectedButtons) do
         local info = self.originalButtons and self.originalButtons[button]
         if button and info then
+            self:RestorePinnedButtonStyle(button, info)
             RestoreButtonHitInfo(button, info)
             SafeCall(button.SetParent, button, info.parent or Minimap)
             if button.SetScale then SafeCall(button.SetScale, button, info.scale or 1) end
@@ -617,6 +873,11 @@ function QMT:RestoreCollectedButtons()
         end
     end
     self:HideUnusedButtonCells(nil)
+    if self.bagPinExtent then
+        self.bagPinTails, self.bagPinExtent = nil, nil
+        ApplyBagButtonHitPadding(self.bagButton)
+        self:PlaceBagButton()
+    end
     self.collectedButtons = {}
     self.collectedMap = {}
     self.originalButtons = {}
@@ -663,165 +924,61 @@ function QMT:ApplyBagSettings()
 end
 
 -- ############################################################
--- Button selection panel
+-- Pinned button settings
 -- ############################################################
-function QMT:IsButtonManuallyExcluded(name)
-    return type(self.db.bag.manualExclude) == "table" and self.db.bag.manualExclude[name] == true
+function QMT:IsButtonPinned(name)
+    return not IsOwnButton(name) and self.db.bag.pinnedButtons[name] == true
 end
 
-function QMT:SetButtonManualCollect(name, collect)
-    if not name or name == "" then return end
-    self.db.bag.manualExclude = self.db.bag.manualExclude or {}
-    if collect then
-        self.db.bag.manualExclude[name] = nil
-    else
-        self.db.bag.manualExclude[name] = true
-    end
-    self:InvalidateExcludeCache()
-    self:RestoreCollectedButtons()
-    self:RescanButtons(true)
-    if self.buttonManager and self.buttonManager:IsShown() then self:RefreshButtonManager() end
+function QMT:SetButtonPinned(name, pinned)
+    pinned = pinned == true
+    if not name or name == "" or self:IsButtonPinned(name) == pinned then return end
+    if pinned and (IsOwnButton(name) or self:GetExcludeTable()[name]) then return end
+    self.db.bag.pinnedButtons[name] = pinned or nil
+    self:LayoutBag()
 end
 
-function QMT:CreateButtonManager()
-    if self.buttonManager then return self.buttonManager end
-    local backdropTemplate = BackdropTemplateMixin and "BackdropTemplate" or nil
-    local f = CreateFrame("Frame", "QFXMinimapToolsButtonManager", UIParent, backdropTemplate)
-    f:SetSize(470, 500)
-    f:SetPoint("CENTER", 0, 20)
-    f:SetFrameStrata("DIALOG")
-    f:SetMovable(true)
-    f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    f:SetBackdrop({
-        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-        edgeSize = 24,
-        insets = {left = 6, right = 6, top = 6, bottom = 6},
-    })
+function QMT:SetPinnedButtonDirection(direction)
+    if direction ~= "UP" and direction ~= "DOWN" then return end
+    if self.db.bag.pinnedDirection == direction then return end
+    self.db.bag.pinnedDirection = direction
+    self:LayoutBag()
+end
 
-    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 26, -16)
-    title:SetWidth(360)
-    title:SetJustifyH("LEFT")
-    title:SetText(L.BUTTON_MANAGER)
-    title:SetTextColor(1, 0.82, 0)
-    f.qfxTitle = title
-
-    local tip = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    tip:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
-    tip:SetWidth(418)
-    tip:SetJustifyH("LEFT")
-    tip:SetWordWrap(true)
-    tip:SetText(L.BUTTON_MANAGER_TIP)
-    f.qfxTip = tip
-
-    local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-    close:SetPoint("TOPRIGHT", -6, -6)
-
-    local listFrame = CreateFrame("Frame", nil, f, backdropTemplate)
-    listFrame:SetPoint("TOPLEFT", 24, -78)
-    listFrame:SetSize(422, 342)
-    if listFrame.SetBackdrop then
-        listFrame:SetBackdrop({
-            bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            tile = true,
-            tileSize = 16,
-            edgeSize = 12,
-            insets = {left = 3, right = 3, top = 3, bottom = 3},
-        })
-        if listFrame.SetBackdropColor then listFrame:SetBackdropColor(0.05, 0.05, 0.05, 0.55) end
-        if listFrame.SetBackdropBorderColor then listFrame:SetBackdropBorderColor(0.55, 0.45, 0.22, 0.85) end
+function QMT:GetPinnedButtonCount()
+    local count = 0
+    local exclude = self:GetExcludeTable()
+    for name in pairs(self.db.bag.pinnedButtons) do
+        if not exclude[name] and self:IsButtonPinned(name) then count = count + 1 end
     end
-    f.listFrame = listFrame
+    return count
+end
 
-    f.rows = {}
-    local function SmallButton(parent, text, x, y, w, h, onClick)
-        local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-        b:SetPoint("TOPLEFT", x, y)
-        b:SetSize(w, h)
-        b:SetText(text)
-        b:SetScript("OnClick", onClick)
-        return b
+function QMT:UpdatePinnableButtonItems(items)
+    local pins, exclude = self.db.bag.pinnedButtons, self:GetExcludeTable()
+    local seen, counts = {}, {}
+    for i = #items, 1, -1 do items[i] = nil end
+    local function Add(name)
+        if not name or IsOwnButton(name) or exclude[name] or seen[name] then return end
+        seen[name] = true
+        local label = self:GetButtonDisplayName(name)
+        counts[label] = (counts[label] or 0) + 1
+        items[#items + 1] = { key = name, label = label }
     end
-
-    for i = 1, 14 do
-        local cb = CreateFrame("CheckButton", nil, listFrame, "UICheckButtonTemplate")
-        cb:SetPoint("TOPLEFT", 12, -9 - (i - 1) * 23)
-        cb:SetSize(24, 24)
-        if cb.Text and cb.Text.ClearAllPoints then cb.Text:ClearAllPoints() end
-        if cb.Text then
-            cb.Text:SetPoint("LEFT", cb, "RIGHT", 4, 0)
-            cb.Text:SetWidth(360)
-            cb.Text:SetJustifyH("LEFT")
-            cb.Text:SetWordWrap(false)
-        end
-        cb:HookScript("OnEnter", function(row)
-            if row.buttonName then
-                GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
-                GameTooltip:AddLine(row.buttonName, 1, 1, 1, true)
-                GameTooltip:Show()
-            end
-        end)
-        cb:HookScript("OnLeave", function(row)
-            if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
-        end)
-        cb:SetScript("OnClick", function(self)
-            if self.buttonName then QMT:SetButtonManualCollect(self.buttonName, self:GetChecked()) end
-        end)
-        f.rows[i] = cb
+    for name in pairs(pins) do Add(name) end
+    for _, button in ipairs(self.collectedButtons or {}) do
+        if button:IsShown() then Add(FrameName(button)) end
     end
-
-    f.prev = SmallButton(f, L.PREV, 82, -438, 86, 24, function()
-        QMT.buttonManagerPage = math.max(1, (QMT.buttonManagerPage or 1) - 1)
-        QMT:RefreshButtonManager()
+    table.sort(items, function(a, b)
+        if pins[a.key] ~= pins[b.key] then return pins[a.key] == true end
+        local left, right = a.label:lower(), b.label:lower()
+        if left == right then return a.key < b.key end
+        return left < right
     end)
-    f.next = SmallButton(f, L.NEXT, 178, -438, 86, 24, function()
-        QMT.buttonManagerPage = (QMT.buttonManagerPage or 1) + 1
-        QMT:RefreshButtonManager()
-    end)
-    f.rescan = SmallButton(f, L.RESCAN, 274, -438, 118, 24, function()
-        QMT:RestoreCollectedButtons(); QMT:RescanButtons(true); QMT:RefreshButtonManager()
-    end)
-    f.pageText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    f.pageText:SetPoint("BOTTOM", 0, 18)
-    self.buttonManager = f
-    return f
-end
-
-function QMT:RefreshButtonManager()
-    local f = self.buttonManager
-    if not f then return end
-    local list = self:GetKnownButtonList()
-    local perPage = #f.rows
-    local maxPage = math.max(1, math.ceil(math.max(#list, 1) / perPage))
-    self.buttonManagerPage = Clamp(self.buttonManagerPage or 1, 1, maxPage)
-    local startIndex = (self.buttonManagerPage - 1) * perPage + 1
-    for i, row in ipairs(f.rows) do
-        local name = list[startIndex + i - 1]
-        row.buttonName = name
-        if name then
-            row:Show()
-            FitText(row.Text, name, 356)
-            row:SetChecked(not self:IsButtonManuallyExcluded(name))
-        else
-            row:Hide()
-        end
+    for _, item in ipairs(items) do
+        if counts[item.label] > 1 then item.tooltip = item.key end
     end
-    f.prev:SetEnabled(self.buttonManagerPage > 1)
-    f.next:SetEnabled(self.buttonManagerPage < maxPage)
-    f.pageText:SetText(string.format("%d / %d", self.buttonManagerPage, maxPage))
-end
-
-function QMT:ShowButtonManager()
-    self:RescanButtons(true)
-    local f = self:CreateButtonManager()
-    self.buttonManagerPage = self.buttonManagerPage or 1
-    self:RefreshButtonManager()
-    f:Show()
+    if #items == 0 then items[1] = { key = "", label = L.PINNED_BUTTONS_EMPTY, disabled = true } end
 end
 
 -- ############################################################

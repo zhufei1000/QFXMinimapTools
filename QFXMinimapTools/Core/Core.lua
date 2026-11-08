@@ -103,6 +103,7 @@ function QMT:Initialize()
                 or event == "PLAYER_IS_GLIDING_CHANGED"
                 or event == "PLAYER_REGEN_ENABLED" then
                 if event == "PLAYER_REGEN_ENABLED" then
+                    if QMT.pendingMinimapSettings then SafeCall(QMT.ApplyMinimapSettings, QMT) end
                     SafeCall(QMT.ProcessPendingBagOperations, QMT)
                 end
                 -- Only real transitions extend the short 10 Hz probe window. Movement

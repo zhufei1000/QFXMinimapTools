@@ -2,7 +2,7 @@ local ADDON_NAME, QMT = ...
 
 local LegacyCreate = QMT.CreateOptionsFrame
 local LegacyRefresh = QMT.RefreshOptionsControlState
-local previousFrame
+local factoryFrames, legacyFrames = {}, {}
 local version
 
 local function ResolveFactory()
@@ -10,14 +10,6 @@ local function ResolveFactory()
     if type(W) == "table" and type(W.AddonWindow) == "function"
         and type(W.DualRow) == "function" and type(W.NavList) == "function" then
         return W
-    end
-end
-
-local function ClearOwners(frame)
-    if not frame or not frame.factory then return end
-    frame:UnregisterAllEvents()
-    for _, page in pairs(frame.pages) do
-        frame.factory:ClearRefreshes(page.content)
     end
 end
 
@@ -66,26 +58,33 @@ local function BuildPage(frame, key)
     local ok, err = pcall(QMT.BuildManagerPage, QMT, key, page, {
         Widgets = W,
         IncludeReload = true,
-        -- SetUILanguage already rebuilds the native window after committing.
     }, layout)
     W:EndPage()
     if not ok then error(err) end
 end
 
 local function SelectPage(frame, key)
-    if not frame.pages[key] then key = "overview" end
+    if not frame.pageKeys[key] then key = "overview" end
+    if not frame.pages[key] then
+        local page = frame.factory:ScrollPage(frame.content, { reserveBar = true })
+        frame.pages[key] = page
+        BuildPage(frame, key)
+        page:ScrollTo(frame.offsets[key] or 0)
+    end
     frame.selectedPage = key
     for pageKey, page in pairs(frame.pages) do
         page.frame:SetShown(pageKey == key)
     end
     frame.nav:Refresh()
-    QMT:RefreshOptionsControlState()
+    if frame:IsShown() then QMT:RefreshOptionsControlState() end
 end
 
-local function CreateFactoryFrame(W, selected, offsets)
-    local frame = CreateFrame("Frame", "QFXMinimapToolsOptionsFrame", UIParent)
+local function CreateFactoryFrame(W, offsets)
+    local frame = CreateFrame("Frame", nil, UIParent)
     frame.factory = W
     frame.pages = {}
+    frame.pageKeys = {}
+    frame.offsets = offsets or {}
     frame:SetSize(880, 640)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
@@ -116,9 +115,7 @@ local function CreateFactoryFrame(W, selected, offsets)
     local items = {}
     for _, info in ipairs(QMT:GetManagerSettingsPages()) do
         items[#items + 1] = { key = info.key, label = info.title }
-        frame.pages[info.key] = W:ScrollPage(frame.content, { reserveBar = true })
-        BuildPage(frame, info.key)
-        frame.pages[info.key]:ScrollTo(offsets and offsets[info.key] or 0)
+        frame.pageKeys[info.key] = true
     end
     frame.nav = W:NavList(frame.sidebar, {
         mode = "fixed", x = W.Theme.pad, y = -W.Theme.pad,
@@ -126,15 +123,16 @@ local function CreateFactoryFrame(W, selected, offsets)
         getActive = function() return frame.selectedPage end,
         onSelect = function(key) SelectPage(frame, key) end,
     })
-    frame:RegisterEvent("PLAYER_REGEN_DISABLED")
-    frame:RegisterEvent("PLAYER_REGEN_ENABLED")
-    frame:RegisterEvent("SKILL_LINES_CHANGED")
     frame:SetScript("OnEvent", function()
         if frame:IsShown() then QMT:RefreshOptionsControlState() end
     end)
-    frame:SetScript("OnShow", function() QMT:RefreshOptionsControlState() end)
-    QMT.optionsFrame = frame
-    SelectPage(frame, selected)
+    frame:SetScript("OnShow", function(self)
+        self:RegisterEvent("PLAYER_REGEN_DISABLED")
+        self:RegisterEvent("PLAYER_REGEN_ENABLED")
+        self:RegisterEvent("SKILL_LINES_CHANGED")
+        QMT:RefreshOptionsControlState()
+    end)
+    frame:HookScript("OnHide", frame.UnregisterAllEvents)
     return frame
 end
 
@@ -154,18 +152,21 @@ function QMT:CreateOptionsFrame()
             W = ResolveFactory()
         end
     end
-    local old = self.optionsFrame or previousFrame
-    if old and old ~= self.optionsFrame then ClearOwners(old) end
-    if self.optionsFrame and (not W or self.optionsFrame.factory == W) then return self.optionsFrame end
+    local locale = self.LOCALE
+    local cache = W and factoryFrames or legacyFrames
+    local old, frame = self.optionsFrame, cache[locale]
+    if old and old == frame then return frame end
     local selected = old and old.selectedPage or "overview"
-    local offsets = old and SaveOffsets(old)
-    if self.optionsFrame then
-        ClearOwners(self.optionsFrame)
-        self.optionsFrame:Hide()
+    if old then old:Hide() end
+    if not frame then
         self.optionsFrame = nil
+        frame = W and CreateFactoryFrame(W, old and SaveOffsets(old)) or LegacyCreate(self)
+        cache[locale] = frame
     end
-    local frame = W and CreateFactoryFrame(W, selected, offsets) or LegacyCreate(self)
-    previousFrame = frame
+    self.optionsFrame = frame
+    -- Escape resolves the currently selected locale through UISpecialFrames.
+    _G.QFXMinimapToolsOptionsFrame = frame
+    if W then SelectPage(frame, selected) else self:SelectLegacyOptionsPage(frame, selected) end
     if UISpecialFrames then
         local found
         for _, name in ipairs(UISpecialFrames) do

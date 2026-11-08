@@ -61,8 +61,8 @@ function QMT:CreateStatFrame(key)
             if key == "coordinates" then
                 GameTooltip:AddLine(L.COPY_COORDS)
             elseif key == "time" then
-                GameTooltip:AddLine(QMT.ZH and "时间" or "Time")
-                GameTooltip:AddLine(QMT.ZH and "右键打开日历" or "Right-click to open calendar", 1, 1, 1, true)
+                GameTooltip:AddLine(L.CLOCK_TITLE)
+                GameTooltip:AddLine(L.CALENDAR_OPEN_RIGHT, 1, 1, 1, true)
                 if QMT:HasCalendarNotification() then GameTooltip:AddLine(L.CALENDAR_PENDING, 1, 0.82, 0.1, true) end
             end
             GameTooltip:Show()
@@ -370,7 +370,7 @@ function QMT:GetPhaseIDText()
     -- layer system and the GUID server/spawn fields are obfuscated.
     if QMT.IsForever and QMT:IsForever() then return "" end
     local phaseID = self:DetectPhaseID()
-    local prefix = QMT.ZH and "分片 " or "Shard "
+    local prefix = L.SHARD_PREFIX
     if not phaseID then
         return prefix .. ColorText("--", AccentHex())
     end
@@ -410,7 +410,7 @@ function QMT:ShowCopyCoordinatesPopup()
     local coords = self:GetCoordinatesText():gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
     if coords == "" then return end
     StaticPopupDialogs["QFX_MINIMAP_COORDS"] = {
-        text = QMT.ZH and "当前坐标：" or "Current coordinates:",
+        text = L.CURRENT_COORDS,
         button1 = OKAY or "OK",
         hasEditBox = true,
         editBoxWidth = 220,
@@ -554,6 +554,10 @@ function QMT:EnsureStatTicker(key, interval, callback)
     return true
 end
 
+local function NeedsMinuteTicker(db)
+    return db and db.display and (db.display.time or (db.minimap and db.minimap.enabled))
+end
+
 function QMT:EnsureAlignedMinuteTicker(callback)
     if not C_Timer or not C_Timer.NewTicker then return false end
     if self.timeTicker and self.timeTickerInterval == "minute-aligned" then return true end
@@ -568,8 +572,7 @@ function QMT:EnsureAlignedMinuteTicker(callback)
     self.timeTickerInterval = "minute-aligned"
     self.timeTicker = C_Timer.NewTimer(delay, function()
         callback()
-        local cfg = QMT.db and QMT.db.display
-        if not cfg or not cfg.time then
+        if not NeedsMinuteTicker(QMT.db) then
             QFXCancelTicker(QMT, "timeTicker")
             return
         end
@@ -613,8 +616,7 @@ function QMT:RefreshStatUpdaterState()
         QFXCancelTicker(self, "systemTicker")
     end
 
-    local minimapEnabled = self.db and self.db.minimap and self.db.minimap.enabled
-    if d.time or minimapEnabled then
+    if NeedsMinuteTicker(self.db) then
         self:EnsureAlignedMinuteTicker(function()
             local cfg = QMT.db and QMT.db.display
             if cfg and cfg.time then SafeCall(QMT.UpdateOneStat, QMT, "time") end

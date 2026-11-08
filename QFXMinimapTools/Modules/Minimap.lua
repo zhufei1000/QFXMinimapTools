@@ -131,7 +131,7 @@ function QMT:ResetMinimapPosition()
     db.snapX = -inset
     db.snapY = -inset
     self:ApplyAll()
-    if self.optionsFrame then self.optionsFrame:Hide() self.optionsFrame = nil self:ShowOptions() end
+    self:RefreshOptionsControlState()
     Print(L.POSITION_RESET_DONE)
 end
 
@@ -364,7 +364,7 @@ function QMT:RefreshMinimapAttachedElements(updateStats, layoutBag)
         end
         if updateStats then SafeCall(self.UpdateAllStats, self) end
     end
-    if layoutBag and self.bagFrame and self.bagFrame:IsShown() then SafeCall(self.LayoutBag, self) end
+    if layoutBag and self.bagFrame and (self.bagFrame:IsShown() or self.bagPinExtent) then SafeCall(self.LayoutBag, self) end
     if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() and self.HideOutdoorFlightMinimapControls then
         SafeCall(self.HideOutdoorFlightMinimapControls, self)
     end
@@ -696,10 +696,16 @@ local function QFXRestoreBackdrop(obj)
     if original.border and obj.SetBackdropBorderColor then SafeCall(obj.SetBackdropBorderColor, obj, unpack(original.border)) end
 end
 
-function QMT:StripIconBackgroundAndBorder(frame)
+function QMT:StripIconBackgroundAndBorder(frame, keepIcon)
     if not frame then return end
     local function VisitRegion(region)
-        if region and QFXLooksLikeDecorativeIconLayer(region) then
+        if not region or region == keepIcon then return end
+        local texture = keepIcon and region.GetTexture and region:GetTexture()
+        if issecretvalue and issecretvalue(texture) then return end
+        -- LibDBIcon uses file IDs for the ring, background and hover overlay.
+        local addonChrome = keepIcon and (region == frame.border or region == frame.background
+            or texture == 136430 or texture == 136467 or texture == 136477)
+        if addonChrome or QFXLooksLikeDecorativeIconLayer(region) then
             if not region.QFXMinimapToolsDecorOriginal then
                 region.QFXMinimapToolsDecorOriginal = {
                     alpha = region.GetAlpha and region:GetAlpha() or 1,
@@ -715,7 +721,7 @@ function QMT:StripIconBackgroundAndBorder(frame)
     if frame.GetRegions then
         for _, region in ipairs({frame:GetRegions()}) do VisitRegion(region) end
     end
-    if frame.GetChildren then
+    if not keepIcon and frame.GetChildren then
         for _, child in ipairs({frame:GetChildren()}) do
             QFXRememberAndClearBackdrop(child)
             if child.GetRegions then
@@ -725,7 +731,7 @@ function QMT:StripIconBackgroundAndBorder(frame)
     end
 end
 
-function QMT:RestoreIconBackgroundAndBorder(frame)
+function QMT:RestoreIconBackgroundAndBorder(frame, release)
     if not frame then return end
     local function RestoreRegion(region)
         local original = region and region.QFXMinimapToolsDecorOriginal
@@ -736,11 +742,16 @@ function QMT:RestoreIconBackgroundAndBorder(frame)
         elseif region.Hide then
             SafeCall(region.Hide, region)
         end
+        if release then region.QFXMinimapToolsDecorOriginal = nil end
     end
 
     QFXRestoreBackdrop(frame)
     if frame.GetRegions then
         for _, region in ipairs({frame:GetRegions()}) do RestoreRegion(region) end
+    end
+    if release then
+        frame.QFXMinimapToolsBackdropOriginal = nil
+        return
     end
     if frame.GetChildren then
         for _, child in ipairs({frame:GetChildren()}) do
@@ -1107,13 +1118,13 @@ function QMT:LayoutIndicatorColumn()
     local level = math.max((Minimap:GetFrameLevel() or 0) + 43,
         (self.bagButton and self.bagButton:GetFrameLevel() or 0) + 1)
 
-    local function Place(btn, relativeTo, relativePoint, x, y)
+    local function Place(btn, relativeTo, relativePoint, x, y, point)
         btn:SetParent(Minimap)
         btn:SetFrameStrata("HIGH")
         btn:SetFrameLevel(level)
         btn:SetHitRectInsets(-3, -3, -3, -3)
         btn:ClearAllPoints()
-        btn:SetPoint("CENTER", relativeTo, relativePoint, x, y)
+        btn:SetPoint(point or "CENTER", relativeTo, relativePoint, x, y)
         self:StripIconBackgroundAndBorder(btn)
     end
 
@@ -1125,20 +1136,28 @@ function QMT:LayoutIndicatorColumn()
         local baseX = q and 0 or -1
         local previousWidth = q and q:GetWidth() or 0
         local previousHeight = q and q:GetHeight() or 0
+        local pinTail = q and self.bagPinTails and self.bagPinTails[direction]
         for _, key in ipairs(QFX_INDICATOR_ORDER) do
             local btn = self.indicatorButtons[key]
             if btn and btn:IsShown() then
-                local x, y = baseX, 0
-                if direction == "UP" or direction == "DOWN" then
-                    if previousHeight > 0 then
-                        local offset = (previousHeight + btn:GetHeight()) * 0.5 + spacing
-                        y = (direction == "UP" and 1 or -1) * offset
+                if pinTail then
+                    local upward = direction == "UP"
+                    Place(btn, pinTail, upward and "TOP" or "BOTTOM", 0,
+                        (upward and 1 or -1) * math.max(3, spacing), upward and "BOTTOM" or "TOP")
+                    pinTail = nil
+                else
+                    local x, y = baseX, 0
+                    if direction == "UP" or direction == "DOWN" then
+                        if previousHeight > 0 then
+                            local offset = (previousHeight + btn:GetHeight()) * 0.5 + spacing
+                            y = (direction == "UP" and 1 or -1) * offset
+                        end
+                    elseif previousWidth > 0 then
+                        local offset = (previousWidth + btn:GetWidth()) * 0.5 + spacing
+                        x = (direction == "RIGHT" and 1 or -1) * offset
                     end
-                elseif previousWidth > 0 then
-                    local offset = (previousWidth + btn:GetWidth()) * 0.5 + spacing
-                    x = (direction == "RIGHT" and 1 or -1) * offset
+                    Place(btn, previous, relativePoint, x, y)
                 end
-                Place(btn, previous, relativePoint, x, y)
                 previous = btn
                 previousWidth = btn:GetWidth()
                 previousHeight = btn:GetHeight()
@@ -1384,7 +1403,7 @@ function QMT:CreateUtilityTextFrame(key)
         frame:SetScript("OnEnter", function(owner)
             SafeCall(QMT.StartUtilityCoordinatesHoverTicker, QMT)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(L.COPY_COORDS or (QMT.ZH and "复制坐标" or "Copy coordinates"))
+            GameTooltip:AddLine(L.COPY_COORDS)
             GameTooltip:AddLine(frame.__qfxText or "", 1, 1, 1, true)
             GameTooltip:Show()
         end)
@@ -1398,9 +1417,9 @@ function QMT:CreateUtilityTextFrame(key)
     elseif key == "phase" then
         frame:SetScript("OnEnter", function(owner)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(QMT.ZH and "分片 / 区域实例编号" or "Shard / zone instance ID")
+            GameTooltip:AddLine(L.SHARD_TITLE)
             if QMT.GetPhaseIDText then GameTooltip:AddLine(QMT:GetPhaseIDText(), 1, 1, 1, true) end
-            GameTooltip:AddLine(QMT.ZH and "来自附近生物 GUID，并非暴雪提供的正式位面 ID；只在鼠标指向或目标变化时更新。" or "Derived from nearby creature GUIDs, not an official phase ID. Updates only on mouseover or target changes.", 0.75, 0.75, 0.75, true)
+            GameTooltip:AddLine(L.SHARD_TIP, 0.75, 0.75, 0.75, true)
             GameTooltip:Show()
         end)
         frame:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1604,8 +1623,8 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
         calendar:SetScript("OnEnter", function(owner)
             QMT:SetIndicatorHovered(owner, true)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(QMT.ZH and "日历" or "Calendar")
-            GameTooltip:AddLine(L.CALENDAR_OPEN or (QMT.ZH and "左键打开日历" or "Left-click to open the calendar"), 1, 1, 1)
+            GameTooltip:AddLine(L.CALENDAR_TITLE)
+            GameTooltip:AddLine(L.CALENDAR_OPEN, 1, 1, 1)
             if QMT:HasCalendarNotification() then GameTooltip:AddLine(L.CALENDAR_PENDING or "Pending invites", 1, 0.82, 0.1, true) end
             GameTooltip:Show()
         end)
@@ -1622,7 +1641,7 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
         mail:SetScript("OnEnter", function(owner)
             QMT:SetIndicatorHovered(owner, true)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(L.MAIL_PENDING or (QMT.ZH and "有新邮件" or "New mail"))
+            GameTooltip:AddLine(L.MAIL_PENDING)
             GameTooltip:Show()
         end)
         mail:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeMailFrame(), button) end)
@@ -1638,7 +1657,7 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
         crafting:SetScript("OnEnter", function(owner)
             QMT:SetIndicatorHovered(owner, true)
             GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(QMT.ZH and "制造订单" or "Crafting Orders")
+            GameTooltip:AddLine(L.CRAFTING_ORDERS_TITLE)
             local info = C_CraftingOrders and C_CraftingOrders.GetPersonalOrdersInfo and SafeCall(C_CraftingOrders.GetPersonalOrdersInfo)
             if type(info) == "table" then
                 for _, order in pairs(info) do
@@ -1904,8 +1923,8 @@ function QMT:GetTrackingIndicator()
     btn:SetScript("OnEnter", function(owner)
         QMT:SetIndicatorHovered(owner, true)
         GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-        GameTooltip:AddLine(QMT.ZH and "追踪" or "Tracking")
-        GameTooltip:AddLine(QMT.ZH and "左键打开追踪菜单" or "Left-click to open tracking menu", 1, 1, 1)
+        GameTooltip:AddLine(L.TRACKING_TITLE)
+        GameTooltip:AddLine(L.TRACKING_OPEN, 1, 1, 1)
         GameTooltip:Show()
     end)
     btn:SetScript("OnClick", function(owner, button)
@@ -2135,11 +2154,15 @@ function QMT:ApplyExpansionLandingPageButtonPosition()
     end
 end
 
-function QMT:ApplyManualMinimapPosition()
-    if self.flightModeActive then return end
+function QMT:ApplyManualMinimapPosition(leavingFlight)
+    if self.flightModeActive and not leavingFlight then return end
     if not Minimap or not MinimapCluster or not UIParent then return end
     local db = self.db and self.db.minimap
     if not db or db.autoSnap then return end
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingMinimapSettings = true
+        return
+    end
 
     MinimapCluster:SetClampedToScreen(false)
     SafeCall(Minimap.SetClampedToScreen, Minimap, false)
@@ -2160,6 +2183,7 @@ function QMT:ApplyManualMinimapPosition()
     Minimap:ClearAllPoints()
     Minimap:SetPoint("CENTER", UIParent, "BOTTOMLEFT", mp.x, mp.y)
     self:UpdateSquareBorderPosition()
+    if leavingFlight then return end
     self:ApplyQueueStatusButtonPosition()
     self:ApplyMailFramePosition()
     self:ApplyTrackingButtonPosition()
@@ -2172,7 +2196,7 @@ function QMT:ApplyManualMinimapPosition()
         for key in pairs(self.statFrames) do self:PlaceStatFrame(key) end
         self:UpdateAllStats()
     end
-    if self.bagFrame and self.bagFrame:IsShown() then self:LayoutBag() end
+    if self.bagFrame and (self.bagFrame:IsShown() or self.bagPinExtent) then self:LayoutBag() end
 end
 
 function QMT:SaveManualMinimapPosition()
@@ -2185,6 +2209,7 @@ end
 
 function QMT:StartMoveMinimap()
     if self.flightModeActive then return end
+    if InCombatLockdown and InCombatLockdown() then return end
     if not Minimap or not UIParent or not self.db or self.db.minimap.locked then return end
     local scale = UIParent:GetEffectiveScale() or 1
     local cursorX, cursorY = GetCursorPosition()
@@ -2196,6 +2221,7 @@ function QMT:StartMoveMinimap()
     local mover = self.minimapMover or self.squareBorder
     if not mover then return end
     mover:SetScript("OnUpdate", function()
+        if InCombatLockdown and InCombatLockdown() then return end
         local s = UIParent:GetEffectiveScale() or 1
         local x, y = GetCursorPosition()
         x, y = x / s, y / s
@@ -2274,10 +2300,14 @@ function QMT:ApplyMinimapMoveMode()
     end
 end
 
-function QMT:ApplySmartTopRightSnap()
-    if self.flightModeActive then return end
+function QMT:ApplySmartTopRightSnap(leavingFlight)
+    if self.flightModeActive and not leavingFlight then return end
     if not self.db or not self.db.minimap or not self.db.minimap.enabled or not self.db.minimap.autoSnap then return end
     if not Minimap or not MinimapCluster or not UIParent then return end
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingMinimapSettings = true
+        return
+    end
     local anchor = self:CreateSnapAnchor()
     local inset = self:GetSnapInset()
     -- Auto snap is fixed behavior. Always use the safe inset instead of reusing old
@@ -2299,7 +2329,7 @@ function QMT:ApplySmartTopRightSnap()
     Minimap:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, 0)
 
     self:UpdateSquareBorderPosition()
-    self:RequestAttachedElementRefresh(true, true)
+    if not leavingFlight then self:RequestAttachedElementRefresh(true, true) end
 end
 
 function QMT:RequestSmartTopRightSnap()
@@ -2369,11 +2399,14 @@ function QMT:RefreshLocale()
     local choice = self.db and self.db.ui and self.db.ui.language or "AUTO"
     SelectLocale(NormalizeLanguageChoice(choice))
     RegisterBuiltInBorderPresets()
+    if self.bagFrame and self.bagFrame.emptyText then self.bagFrame.emptyText:SetText(L.BAG_EMPTY) end
+    if self.utilityRow then SafeCall(self.UpdateUtilityPhaseText, self) end
 end
 
 function QMT:GetLanguageLabel(key)
     key = NormalizeLanguageChoice(key)
     if key == "zhCN" then return L.LANGUAGE_ZH end
+    if key == "zhTW" then return L.LANGUAGE_ZH_TW end
     if key == "enUS" then return L.LANGUAGE_EN end
     return L.LANGUAGE_AUTO
 end
@@ -2389,36 +2422,20 @@ function QMT:RefreshSettingsPanelText()
     if panel.qfxCommandHint then panel.qfxCommandHint:SetText(L.COMMAND_HINT) end
 end
 
-function QMT:RefreshButtonManagerText()
-    local f = self.buttonManager
-    if not f then return end
-    if f.qfxTitle then f.qfxTitle:SetText(L.BUTTON_MANAGER) end
-    if f.qfxTip then f.qfxTip:SetText(L.BUTTON_MANAGER_TIP) end
-    if f.prev then f.prev:SetText(L.PREV) end
-    if f.next then f.next:SetText(L.NEXT) end
-    if f.rescan then f.rescan:SetText(L.RESCAN) end
-end
-
 function QMT:SetUILanguage(key)
     if not self.db then return end
     key = NormalizeLanguageChoice(key)
     self.db.ui = self.db.ui or {}
+    if self.db.ui.language == key then return end
     self.db.ui.language = key
     self:RefreshLocale()
     self:RefreshSettingsPanelText()
-    self:RefreshButtonManagerText()
-    if self.buttonManager and self.buttonManager:IsShown() then self:RefreshButtonManager() end
-    if self.optionsFrame then
-        local wasShown = self.optionsFrame:IsShown()
-        self.optionsFrame:Hide()
-        self.optionsFrame = nil
-        if wasShown then
-            if C_Timer and C_Timer.After then
-                C_Timer.After(0, function() QMT:ShowOptions() end)
-            else
-                self:ShowOptions()
-            end
+    local frame = self.optionsFrame
+    if frame and frame:IsShown() then
+        local function RefreshWindow()
+            if QMT.optionsFrame == frame and frame:IsShown() then QMT:ShowOptions() end
         end
+        if C_Timer and C_Timer.After then C_Timer.After(0, RefreshWindow) else RefreshWindow() end
     end
     Print(L.LANGUAGE_CHANGED)
 end
@@ -2807,12 +2824,18 @@ end
 
 -- ############################################################
 function QMT:ApplyMinimapSettings()
+    if InCombatLockdown and InCombatLockdown() then
+        self.pendingMinimapSettings = true
+        return
+    end
+    self.pendingMinimapSettings = nil
     local db = self.db.minimap
     if not Minimap or not MinimapCluster then return end
     self:CaptureOriginalMinimapState()
 
-    if not self.originalGetMinimapShape then
+    if not self.capturedMinimapShape then
         self.originalGetMinimapShape = _G.GetMinimapShape
+        self.capturedMinimapShape = true
     end
 
     -- 自动贴近屏幕边缘：作为默认行为固定开启，不再放到设置界面里。
@@ -2840,7 +2863,7 @@ function QMT:ApplyMinimapSettings()
             self:SetNativeMinimapControlsHidden(false)
         end
     else
-        _G.GetMinimapShape = self.originalGetMinimapShape or _G.GetMinimapShape
+        _G.GetMinimapShape = self.originalGetMinimapShape
         self:SetRoundMinimapArtHidden(false)
         self:SetNativeMinimapControlsHidden(false)
         self:RestoreOriginalMinimapState()

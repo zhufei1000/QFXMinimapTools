@@ -185,6 +185,12 @@ function UI.ControlX(x, labelW)
     return x + (labelW or UI.LAYOUT.labelW) + 8
 end
 
+local function TrackOptionRefresh(control, refresh)
+    local owner = control:GetParent()
+    while owner and not owner.optionRefreshers do owner = owner:GetParent() end
+    if owner then table.insert(owner.optionRefreshers, refresh) end
+end
+
 function UI.CreateCheck(parent, text, x, y, getValue, setValue, width, onCommit, tooltip)
     local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
     cb:SetPoint("TOPLEFT", x, y)
@@ -196,7 +202,9 @@ function UI.CreateCheck(parent, text, x, y, getValue, setValue, width, onCommit,
         cb.Text:SetJustifyH("LEFT")
         cb.Text:SetText(text or "")
     end
-    cb:SetChecked(getValue and getValue() or false)
+    local function Refresh() cb:SetChecked(getValue and getValue() or false) end
+    Refresh()
+    TrackOptionRefresh(cb, Refresh)
     cb:SetScript("OnClick", function(self)
         if setValue then setValue(self:GetChecked() and true or false) end
         if onCommit then onCommit() elseif QMT.CommitOptions then QMT:CommitOptions() else QMT:ApplyAll() end
@@ -246,9 +254,15 @@ function UI.CreateSlider(parent, label, x, y, labelW, sliderW, minV, maxV, step,
     local function UpdateValue(value)
         s.Value:SetText(formatText and formatText(value) or tostring(value))
     end
-    local initial = getValue and getValue() or minV
-    s:SetValue(Clamp(initial, minV, maxV))
-    UpdateValue(s:GetValue())
+    local refreshing
+    local function Refresh()
+        refreshing = true
+        s:SetValue(Clamp(getValue and getValue() or minV, minV, maxV))
+        UpdateValue(s:GetValue())
+        refreshing = false
+    end
+    Refresh()
+    TrackOptionRefresh(s, Refresh)
 
     local pendingCommit = false
     local function CommitIfNeeded(force)
@@ -261,6 +275,7 @@ function UI.CreateSlider(parent, label, x, y, labelW, sliderW, minV, maxV, step,
     end
 
     s:SetScript("OnValueChanged", function(_, value)
+        if refreshing then return end
         value = Round(value, step)
         if setValue then setValue(value) end
         UpdateValue(value)
@@ -284,13 +299,14 @@ function UI.CreateButton(parent, text, x, y, w, h, onClick, tooltip)
 end
 
 local dropdownIndex = 0
-function UI.CreateDropdown(parent, labelText, x, y, labelW, w, options, getValue, setValue, onCommit, tooltip)
+function UI.CreateDropdown(parent, labelText, x, y, labelW, w, options, getValue, setValue, onCommit, tooltip, isChecked, beforeOpen)
+    options = options or {}
     labelW = labelW or UI.LAYOUT.labelW
     w = w or UI.LAYOUT.controlW
     local label = UI.CreateRowLabel(parent, labelText, x, y, labelW)
     local controlX = UI.ControlX(x, labelW)
 
-    if UIDropDownMenu_Initialize and UIDropDownMenu_SetWidth and UIDropDownMenu_SetText and UIDropDownMenu_CreateInfo and UIDropDownMenu_AddButton then
+    if not isChecked and UIDropDownMenu_Initialize and UIDropDownMenu_SetWidth and UIDropDownMenu_SetText and UIDropDownMenu_CreateInfo and UIDropDownMenu_AddButton then
         dropdownIndex = dropdownIndex + 1
         local name = "QFXMinimapToolsDropdown" .. dropdownIndex
         local dd = CreateFrame("Frame", name, parent, "UIDropDownMenuTemplate")
@@ -301,16 +317,16 @@ function UI.CreateDropdown(parent, labelText, x, y, labelW, w, options, getValue
         dd.qfxLabel = label
         dd.SetText = function(self, text) UIDropDownMenu_SetText(self, text or "") end
         dd.GetText = function(self) if UIDropDownMenu_GetText then return UIDropDownMenu_GetText(self) end return "" end
-        UIDropDownMenu_SetText(dd, getValue and getValue() or "")
+        local function Refresh() dd:SetText(getValue and getValue() or "") end
+        Refresh()
+        TrackOptionRefresh(dd, Refresh)
         UIDropDownMenu_Initialize(dd, function(_, level)
             for _, opt in ipairs(options or {}) do
                 if opt and opt.key then
-                    local selected = opt.key == (dd.qfxSelectedKey or nil)
                     local info = UIDropDownMenu_CreateInfo()
                     info.text = opt.label or opt.key
-                    info.checked = selected or ((getValue and tostring(getValue()) == tostring(opt.label or opt.key)) and true or false)
+                    info.checked = getValue and tostring(getValue()) == tostring(opt.label or opt.key) or false
                     info.func = function()
-                        dd.qfxSelectedKey = opt.key
                         if setValue then setValue(opt.key) end
                         UIDropDownMenu_SetText(dd, opt.label or opt.key)
                         if CloseDropDownMenus then CloseDropDownMenus() end
@@ -352,34 +368,81 @@ function UI.CreateDropdown(parent, labelText, x, y, labelW, w, options, getValue
     menu:Hide()
     button.qfxMenu = menu
 
-    local rowH = 22
-    local count = 0
-    for _, opt in ipairs(options or {}) do
-        if opt and opt.key then
-            count = count + 1
-            local row = CreateFrame("Button", nil, menu)
-            row:SetPoint("TOPLEFT", 8, -6 - (count - 1) * rowH)
-            row:SetSize(w - 16, rowH)
-            row.Text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.Text:SetPoint("LEFT", 6, 0)
-            row.Text:SetText(opt.label or opt.key)
-            row.Highlight = row:CreateTexture(nil, "HIGHLIGHT")
-            row.Highlight:SetAllPoints(row)
-            row.Highlight:SetColorTexture(1, 1, 1, 0.12)
-            row:SetScript("OnClick", function()
-                if setValue then setValue(opt.key) end
-                button:SetText(opt.label or opt.key)
-                menu:Hide()
-                if onCommit then onCommit() elseif QMT.CommitOptions then QMT:CommitOptions() else QMT:ApplyAll() end
-            end)
+    menu:SetClampedToScreen(true)
+    local rows, rowH, offset = {}, 22, 0
+    local function Render()
+        local count = isChecked and math.min(#options, 12) or #options
+        for i = 1, count do
+            local row = rows[i]
+            if not row then
+                row = CreateFrame("Button", nil, menu)
+                rows[i] = row
+                row:SetPoint("TOPLEFT", 8, -6 - (i - 1) * rowH)
+                row:SetSize(w - 16, rowH)
+                row.Text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                row.Text:SetPoint("LEFT", 6, 0)
+                row.Text:SetPoint("RIGHT", -6, 0)
+                row.Text:SetJustifyH("LEFT")
+                row.Text:SetWordWrap(false)
+                row.Highlight = row:CreateTexture(nil, "HIGHLIGHT")
+                row.Highlight:SetAllPoints(row)
+                row.Highlight:SetColorTexture(1, 1, 1, 0.12)
+                row:SetScript("OnClick", function(self)
+                    local opt = self.option
+                    if not opt or opt.disabled then return end
+                    if setValue then
+                        if isChecked then setValue(opt.key, not isChecked(opt.key)) else setValue(opt.key) end
+                    end
+                    if isChecked then
+                        button:SetText(getValue())
+                        Render()
+                    else
+                        button:SetText(opt.label or opt.key)
+                        menu:Hide()
+                    end
+                    if onCommit then onCommit() elseif QMT.CommitOptions then QMT:CommitOptions() else QMT:ApplyAll() end
+                end)
+            end
+            local opt = options[i + offset]
+            row.option = opt
+            local prefix = isChecked and (isChecked(opt.key) and "[x]  " or "[ ]  ") or ""
+            row.Text:SetText(prefix .. (opt.label or opt.key))
+            row:SetEnabled(not opt.disabled)
+            row:Show()
         end
+        for i = count + 1, #rows do rows[i]:Hide() end
+        menu:SetSize(w, math.max(1, count) * rowH + 12)
     end
-    menu:SetSize(w, math.max(1, count) * rowH + 12)
+    if isChecked then
+        menu:EnableMouse(true)
+        menu:EnableMouseWheel(true)
+        menu:SetScript("OnHide", function()
+            if UI.openChecklist == menu then UI.openChecklist = nil end
+        end)
+        menu:SetScript("OnMouseWheel", function(_, delta)
+            offset = Clamp(offset - delta, 0, math.max(0, #options - 12))
+            Render()
+        end)
+    end
+    Render()
     button:SetScript("OnClick", function()
-        if menu:IsShown() then menu:Hide() else menu:Show() end
+        if menu:IsShown() then
+            menu:Hide()
+        else
+            if beforeOpen then beforeOpen() end
+            if isChecked then
+                if UI.openChecklist then UI.openChecklist:Hide() end
+                UI.openChecklist = menu
+            end
+            offset = 0
+            Render()
+            menu:Show()
+        end
     end)
     button:SetScript("OnHide", function() menu:Hide() end)
-    button:SetText(getValue and getValue() or "")
+    local function Refresh() button:SetText(getValue and getValue() or "") end
+    Refresh()
+    TrackOptionRefresh(button, Refresh)
     AddTooltip(button, labelText, tooltip)
     return button
 end
@@ -394,6 +457,12 @@ function UI.CreateEditBox(parent, labelText, x, y, labelW, w, getValue, setValue
     eb:SetCursorPosition(0)
     eb.qfxLabel = label
     eb.qfxLastCommittedText = eb:GetText() or ""
+    TrackOptionRefresh(eb, function()
+        if eb:HasFocus() then return end
+        local text = getValue and getValue() or ""
+        if eb:GetText() ~= text then eb:SetText(text) end
+        eb.qfxLastCommittedText = text
+    end)
     local committing = false
     local function Commit(self)
         if committing then return end

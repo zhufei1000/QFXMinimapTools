@@ -112,8 +112,22 @@ local Q = {}
 local function loadAddon(file) assert(loadfile("QFXMinimapTools/" .. file))("QFXMinimapTools", Q) end
 loadAddon("Locale.lua"); loadAddon("Core/Utils.lua")
 Q.IsForever = function() return forever end
-Q.InvalidateExcludeCache = noop
-loadAddon("Core/Defaults.lua"); Q:LoadDB()
+Q.Print = noop
+loadAddon("Modules/Minimap.lua")
+loadAddon("Core/Defaults.lua"); loadAddon("Modules/ButtonBag.lua"); Q:LoadDB()
+local addonButtonName = "LibDBIcon10_TestAddon"
+local managerButtonName = "LibDBIcon10_QFXAddonManager"
+local ownButtonName = "LibDBIcon10_QFXMinimapTools"
+Q.collectedButtons = {}
+for _, name in ipairs({addonButtonName, managerButtonName, "QFXAddonManagerMinimapButton", "QFXMinimapToolsButton", ownButtonName}) do
+    Q.collectedButtons[#Q.collectedButtons + 1] = {GetName = function() return name end, IsShown = function() return true end}
+end
+Q.db.bag.pinnedButtons[ownButtonName] = true
+assert(not Q:IsButtonPinned(ownButtonName) and Q:GetPinnedButtonCount() == 0)
+C_AddOns.GetAddOnInfo = function(name)
+    if name == "QFXAddonManager" then return name, "QFX Addon Manager" end
+    if name == "TestAddon" then return name, "Test Addon" end
+end
 local changes, routes, loads = 0, 0, 0
 Q.ApplyAll = function() changes = changes + 1 end
 Q.GetBorderPresetLabel = function() return "Dark" end
@@ -130,13 +144,11 @@ Q.SetIndicatorWeight = function(_, weight) Q.db.minimap.indicatorWeight = weight
 Q.GetIndicatorSpacing = function() return Q.db.minimap.indicatorSpacing end
 local status = "Gathering status"
 Q.GetGatheringProfessionStatusText = function() return status end
-Q.GetLanguageLabel = function(_, key)
-    return key == "enUS" and Q.L.LANGUAGE_EN or key == "zhCN" and Q.L.LANGUAGE_ZH or Q.L.LANGUAGE_AUTO
-end
-Q.SetUILanguage = function(_, key)
-    Q.db.ui.language = key; Q.SelectLocale(key)
-    Q.optionsFrame:Hide(); Q.optionsFrame = nil
-    Q:ShowOptions()
+local function setLanguage(key)
+    local first = #timers + 1
+    Q:SetUILanguage(key)
+    for i = first, #timers do timers[i]() end
+    assert(QFXMinimapToolsOptionsFrame == Q.optionsFrame, "Escape must target the active window")
 end
 ReloadUI = function() changes = changes + 1 end
 loadAddon("UI/Widgets.lua"); loadAddon("UI/Options.lua"); loadAddon("UI/FactoryOptions.lua"); loadAddon("ManagerBridge.lua")
@@ -166,6 +178,34 @@ if mode == "legacy" or mode == "failed" then
     selector.qfxMenu.children[1]:Click()
     assert(Q.db.minimap.indicatorWeight == 0 and selector:GetText() == Q.L.INDICATOR_WEIGHT_THIN,
         "legacy selector must retain the zero-valued Thin option")
+    local picker = Q.optionsFrame.pinnedButtonsDropdown
+    local position = Q.optionsFrame.pinnedPositionDropdown
+    assert(position:GetText() == Q.L.BUTTON_BELOW_Q)
+    picker:Click()
+    assert(#picker.qfxMenu.children == 3)
+    local managerItem = picker.qfxMenu.children[1]
+    assert(managerItem.option.key == managerButtonName)
+    managerItem:Click()
+    assert(Q:IsButtonPinned(managerButtonName))
+    managerItem:Click()
+    local item = picker.qfxMenu.children[3]
+    assert(item.option.label == "Test Addon")
+    item:Click()
+    assert(Q:IsButtonPinned(addonButtonName) and picker.qfxMenu:IsShown())
+    item:Click()
+    assert(not Q:IsButtonPinned(addonButtonName))
+    position.qfxMenu.children[2]:Click()
+    assert(Q.db.bag.pinnedDirection == "UP")
+    local firstFrame = Q.optionsFrame
+    local alternate = locale == "zhTW" and "enUS" or "zhTW"
+    setLanguage(alternate)
+    assert(Q.optionsFrame ~= firstFrame and not firstFrame:IsShown())
+    Q.db.minimap.scale = 1.6
+    setLanguage("AUTO")
+    assert(Q.optionsFrame == firstFrame and firstFrame.minimapScaleSlider:GetValue() == 1.6)
+    local frameCount = #frames
+    setLanguage(alternate); setLanguage("AUTO")
+    assert(Q.optionsFrame == firstFrame and #frames == frameCount)
     Q:ToggleOptions(); assert(not Q.optionsFrame:IsShown())
     print("PASS: " .. mode .. " " .. locale .. " fallback and first toggle")
     return
@@ -220,7 +260,31 @@ Q.db.minimap.enabled = false; Q:RefreshOptionsControlState()
 assert(weightSelector:GetAlpha() == .35)
 Q.db.minimap.enabled = true; Q:RefreshOptionsControlState()
 nav("bag")
+local pins = find(f.pages.bag, Q.L.PINNED_BUTTONS)._leftRegion._control
+local position = find(f.pages.bag, Q.L.PINNED_BUTTON_POSITION)._leftRegion._control
+assert(position._label:GetText() == Q.L.BUTTON_BELOW_Q)
+pins._openMenu()
+assert(#pins._menu._rows == 3)
+local managerPin = pins._menu._rows[1]
+assert(managerPin._key == managerButtonName)
+managerPin:Click()
+assert(Q:IsButtonPinned(managerButtonName))
+managerPin:Click()
+local pin = pins._menu._rows[3]
+assert(pin._label:GetText() == "Test Addon")
+pin:Click()
+assert(Q:IsButtonPinned(addonButtonName) and pins._menu:IsShown())
+assert(pins._label:GetText() == string.format(Q.L.BUTTON_COUNT_SELECTED, 1))
+position._openMenu()
+position._menu._rows[2]:Click()
+assert(Q.db.bag.pinnedDirection == "UP" and Q:IsButtonPinned(addonButtonName))
+pins._openMenu()
+assert(pins._menu._rows[1]._key == addonButtonName)
+pins._menu._rows[1]:Click()
+assert(not Q:IsButtonPinned(addonButtonName) and pins._label:GetText() == Q.L.BUTTON_NONE_SELECTED)
+pins._closeMenu()
 Q.db.bag.enabled = false; Q:RefreshOptionsControlState()
+assert(pins:GetAlpha() == .35 and position:GetAlpha() == .35)
 assert(find(f.pages.bag, Q.L.BUTTON_SCALE)._leftRegion._control:GetAlpha() == .35)
 assert(find(f.pages.bag, Q.L.EXCLUDE)._leftRegion._control:GetAlpha() == .35)
 Q.db.bag.enabled = true; Q:RefreshOptionsControlState()
@@ -247,18 +311,24 @@ end
 nav("advanced")
 local reload = find(f.pages.advanced, Q.L.RELOAD)._leftRegion._control
 before = changes; reload:Click(); assert(changes == before + 1, "native advanced page must retain reload")
-f.pages.advanced:ScrollTo(35)
-Q:SetUILanguage("zhCN")
-assert(Q.optionsFrame ~= f and Q.optionsFrame.selectedPage == "advanced")
-for _, entry in ipairs(W._refresh) do
-    for _, page in pairs(f.pages) do assert(entry.owner ~= page.content, "discarded pages must release callbacks") end
+local localizedFrames = { [Q.LOCALE] = f }
+for _, language in ipairs({"enUS", "zhCN", "zhTW"}) do
+    setLanguage(language)
+    assert(Q.optionsFrame.selectedPage == "advanced")
+    assert(Q.optionsFrame == localizedFrames[language] or not localizedFrames[language])
+    assert(Q.L.TITLE == ({ enUS = "QFX Minimap Tools", zhCN = "QFX 小地图工具", zhTW = "QFX 小地圖工具" })[language])
+    localizedFrames[language] = Q.optionsFrame
+    find(Q.optionsFrame.pages.advanced, Q.L.UI_LANGUAGE)
 end
 assert(not W._refreshScope and not W.lastRefreshError)
-local callbackCount = #W._refresh
+local finalFrameCount, callbackCount = #frames, #W._refresh
 for _ = 1, 4 do
-    Q:SetUILanguage("enUS"); Q:SetUILanguage("zhCN")
-    Q:RefreshOptionsControlState()
-    assert(#W._refresh == callbackCount and not W.lastRefreshError, "language rebuilds must not leak callbacks")
+    for _, language in ipairs({"enUS", "zhCN", "zhTW"}) do
+        setLanguage(language)
+        assert(Q.optionsFrame == localizedFrames[language])
+        assert(#frames == finalFrameCount and #W._refresh == callbackCount and not W.lastRefreshError,
+            "language switches must reuse frames and callbacks")
+    end
 end
 assert(#UISpecialFrames == 1)
 print("PASS: " .. mode .. " " .. locale .. (forever and " forever" or " retail") .. ": seven pages, chrome, contacts, native entry, state, combat, locale and cleanup")

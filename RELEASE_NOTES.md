@@ -1,11 +1,11 @@
-# QFXMinimapTools 1.0.72
+# QFXMinimapTools 1.0.73
 
-- Replace offset-silhouette thickening with four true vector stroke weights for calendar, mail, crafting-order and tracking icons, improving diagonal, curve and corner consistency.
-- Replace the numeric 0–3 weight slider with named Thin, Regular, Medium and Bold choices in both the native and factory-rendered settings pages. Existing saved choices are preserved.
-- Store each icon's four weights in a padded BLP strip with eight mip levels. Use the same selected region for the main icon and hover highlight, reducing each icon from six texture layers to two.
-- Keep component size, spacing, colors, hover scaling and calendar date text behavior unchanged. Use distinct asset paths so the new strips do not reuse cached old textures.
-- Retain Retail 12.1.5 and WoW Forever 1.60.1 support, existing settings and the icon license.
+- Drag Q along the left minimap edge. The bag remembers its position and expands upward below the midpoint, or downward from the midpoint and above.
+- Pin selected addon buttons above or below Q. Improve collection of nearby icons and the hit area of small icons. Hovering a pinned button now keeps the open bag visible.
+- Restore the correct round minimap shape and respect the border setting after landing. Check both primary profession slots and apply flight layout changes after combat.
+- Keep the calendar date updating when the clock text is hidden. Add Traditional Chinese and reuse settings pages when switching languages.
+- Compatible with Retail 12.1.5 and WoW Forever 1.60.1.
 
-简体中文：地图组件图标改用四档真实矢量线宽，改善圆弧、斜线和边角的均匀程度。数字滑块改为“细、标准、中粗、粗”选项，每个图标由六层纹理减到两层；保留原有粗细选择、组件尺寸、间距、颜色及日历日期显示。
+简体中文：Q 按钮可沿小地图左边缘拖动，收纳框随位置向上或向下展开。选中的插件按钮可常驻 Q 上方或下方。修复附近按钮漏收、小图标点击范围、悬停常驻图标时误关闭、圆形切换、落地边框、第二专业槽识别和日历日期更新。补齐繁体中文，切换语言时复用设置页。
 
-繁體中文：地圖元件圖示改用四檔真實向量線寬，改善圓弧、斜線與邊角的均勻程度。數字滑桿改為「細、標準、中粗、粗」選項，每個圖示由六層紋理減至兩層；保留原有粗細選擇、元件尺寸、間距、色彩及日曆日期顯示。
+繁體中文：Q 按鈕可沿小地圖左邊緣拖曳，收納框會隨位置向上或向下展開。選取的插件按鈕可常駐 Q 上方或下方。修正附近按鈕漏收、小圖示點擊範圍、滑鼠移到常駐圖示時誤關閉、圓形切換、落地邊框、第二專業欄位辨識及行事曆日期更新。新增繁體中文介面，切換語言時會重複使用設定頁。

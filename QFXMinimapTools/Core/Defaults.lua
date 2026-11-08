@@ -51,6 +51,8 @@ local defaults = {
         mainButtonEdge = "LEFT",
         mainButtonOffset = 0,
         manualExclude = {},
+        pinnedButtons = {},
+        pinnedDirection = "DOWN",
         exclude = "MiniMapTracking,MiniMapMailFrame,MiniMapWorldMapButton,MinimapZoomIn,MinimapZoomOut,GameTimeFrame,TimeManagerClockButton,QueueStatusButton,QueueStatusMinimapButton,AddonCompartmentFrame,ExpansionLandingPageMinimapButton,GarrisonLandingPageMinimapButton,CraftingOrderFrame,ProfessionsCustomerOrdersFrame,ProfessionsCustomerOrders_MinimapButton",
     },
     performance = {
@@ -141,8 +143,33 @@ local function NormalizeCurrentDB(db)
         db.minimap.flightCenterOnlyGathering = true
     end
 
-    db.bag = db.bag or {}
-    db.bag.manualExclude = type(db.bag.manualExclude) == "table" and db.bag.manualExclude or {}
+    local bag = db.bag
+    local hadUpperPins, hadLowerPins
+    for name, placement in pairs(bag.pinnedButtons) do
+        if placement == "UP" then hadUpperPins = true end
+        if placement == "DOWN" then hadLowerPins = true end
+        bag.pinnedButtons[name] = type(name) == "string" and name ~= ""
+            and (placement == true or placement == "UP" or placement == "DOWN") or nil
+    end
+    if hadUpperPins or hadLowerPins then
+        bag.pinnedDirection = hadUpperPins and not hadLowerPins and "UP" or "DOWN"
+    elseif bag.pinnedDirection ~= "UP" then
+        bag.pinnedDirection = "DOWN"
+    end
+
+    -- The old popup's exclusions now live in the editable exclusion list.
+    local excluded, added = {}, {}
+    for name in bag.exclude:gmatch("[^,%s]+") do excluded[name] = true end
+    for name, value in pairs(bag.manualExclude) do
+        if value and type(name) == "string" and name:match("^[^,%s]+$") then
+            if not excluded[name] then added[#added + 1] = name end
+            bag.manualExclude[name] = nil
+        end
+    end
+    if #added > 0 then
+        table.sort(added)
+        bag.exclude = (bag.exclude ~= "" and bag.exclude .. "," or "") .. table.concat(added, ",")
+    end
 
     db.performance = db.performance or {}
     -- 1.0.60 no longer changes the client's global CPU profiler during login.
@@ -174,8 +201,10 @@ function QMT:ResetDefaults()
     self.db = QFXMinimapToolsDB
     NormalizeCurrentDB(self.db)
     self:InvalidateExcludeCache()
+    self.hasScannedButtons = false
     if self.RefreshLocale then self:RefreshLocale() end
     self:ApplyAll()
-    if self.optionsFrame then self.optionsFrame:Hide() self.optionsFrame = nil self:ShowOptions() end
+    if self.RefreshSettingsPanelText then self:RefreshSettingsPanelText() end
+    if self.optionsFrame and self.optionsFrame:IsShown() then self:ShowOptions() end
     Print(L.RESET_DONE)
 end
