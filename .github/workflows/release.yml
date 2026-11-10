@@ -65,12 +65,14 @@ jobs:
             test -n "$CF_API_TOKEN"
             printf '{"runId":"%s","attempt":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "dist/$pending"
             gh release upload "$RELEASE_TAG" "dist/$pending"
-            python3 scripts/publish_curseforge.py --addon-root QFXMinimapTools --project-id 1533519 --expected-version "$RELEASE_TAG" --game-version 12.1.5 --upload
+            python3 scripts/publish_curseforge.py --addon-root QFXMinimapTools --project-id 1533519 --expected-version "$RELEASE_TAG" --upload
             gh release upload "$RELEASE_TAG" "dist/$receipt"
           fi
           jq -e --arg version "$RELEASE_TAG" --arg archive "$archive" '
             .projectId == 1533519 and .version == $version and .filename == $archive
-            and .gameVersion == "12.1.5" and (.fileId | type == "number" and . > 0)
+            and (.gameVersions | sort) == ["1.60.1", "12.1.5"]
+            and (.gameVersionIds | unique | length) == 2
+            and (.fileId | type == "number" and . > 0)
           ' "dist/$receipt" >/dev/null
           assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
           if grep -qxF "$pending" <<<"$assets"; then

@@ -87,12 +87,21 @@ function QMT:ApplyTextStyle(frame, point)
     local font = ResolveFontPath(d.font)
     local fontSize = tonumber(d.fontSize) or 12
     local outline = d.outline or "OUTLINE"
-    local styleKey = tostring(point or "") .. "|" .. tostring(font or "") .. "|" .. tostring(fontSize) .. "|" .. tostring(outline) .. "|" .. tostring(d.shadow and 1 or 0)
-    if frame.__qfxTextStyleKey == styleKey then return end
-    frame.__qfxTextStyleKey = styleKey
+    local shadow = d.shadow and true or false
+    if frame.__qfxTextStylePoint == point and frame.__qfxTextStyleSource == d.font
+        and frame.__qfxTextStyleFont == font and frame.__qfxTextStyleSize == fontSize
+        and frame.__qfxTextStyleOutline == outline and frame.__qfxTextStyleShadow == shadow then
+        return
+    end
+    frame.__qfxTextStylePoint = point
+    frame.__qfxTextStyleSource = d.font
+    frame.__qfxTextStyleFont = font
+    frame.__qfxTextStyleSize = fontSize
+    frame.__qfxTextStyleOutline = outline
+    frame.__qfxTextStyleShadow = shadow
     frame.__qfxTextW, frame.__qfxTextH = nil, nil
     frame.__qfxStatW, frame.__qfxStatH = nil, nil
-    frame.__qfxTimeLayoutKey = nil
+    frame.__qfxTimeLayoutState = nil
     font = ApplyFontStringFont(frame.Text, font, fontSize, outline)
     frame.Text:SetTextColor(1, 1, 1, 1)
     if d.shadow then
@@ -143,11 +152,10 @@ end
 
 function QMT:GetLocationText()
     local zone = ""
-    if self.db.display.showSubZone and GetSubZoneText and GetSubZoneText() ~= "" then
-        zone = GetSubZoneText()
-    elseif GetZoneText then
-        zone = GetZoneText() or ""
+    if self.db.display.showSubZone and GetSubZoneText then
+        zone = GetSubZoneText() or ""
     end
+    if zone == "" and GetZoneText then zone = GetZoneText() or "" end
     return ColorText(zone, ZoneColourHex())
 end
 
@@ -165,20 +173,23 @@ function QMT:GetCoordinatesText()
 end
 
 function QMT:GetTimeCoordinatesText()
-    local parts = {}
-    if self.db.display.time then parts[#parts + 1] = self:GetTimeText() end
-
+    local d = self.db.display
+    local hasTime = d.time == true
     -- When the utility glass row is active, coordinates have their own centered
     -- glass frame below the minimap. Keep the in-map bottom text as time-only to
     -- avoid duplicated coordinate text. If the utility row is not active, keep the
     -- old combined time + coordinates fallback.
     local utilityCoords = self.ShouldUseUtilityRow and self:ShouldUseUtilityRow()
-    if (not utilityCoords) and self.db.display.coordinates then
-        local coords = self:GetCoordinatesText()
-        if coords and coords ~= "" then parts[#parts + 1] = coords end
-    end
+    local hasCoords = d.coordinates == true and not utilityCoords
+    if not hasTime and not hasCoords then return "" end
 
-    return table.concat(parts, ColorText(" | ", DisplayAccentHex()))
+    local time = hasTime and self:GetTimeText() or nil
+    local coords = hasCoords and self:GetCoordinatesText() or nil
+    if coords == "" then coords = nil end
+    if time and coords then
+        return time .. ColorText(" | ", DisplayAccentHex()) .. coords
+    end
+    return time or coords or ""
 end
 
 
@@ -197,8 +208,39 @@ local calendarInviteTextureKeys = {
     "calendarInviteGlow",
 }
 
-local function AddCalendarSignalCandidate(list, obj)
-    if obj and obj.IsShown then list[#list + 1] = obj end
+local function AddCalendarSignalCandidate(list, seen, obj)
+    if obj and obj.IsShown and not seen[obj] then
+        seen[obj] = true
+        list[#list + 1] = obj
+    end
+end
+
+-- The candidate objects are Blizzard frames that live for the whole session.
+-- Cache them instead of rebuilding and deduplicating the list on every clock
+-- update. Rebuild only if the owning GameTime frame is replaced.
+local calendarSignalCandidates, calendarSignalFrame, calendarSignalTexture
+local function GetCalendarSignalCandidates()
+    local frame = _G.GameTimeFrame
+    local texture = _G.GameTimeCalendarInvitesTexture
+    if calendarSignalCandidates and calendarSignalFrame == frame and calendarSignalTexture == texture then
+        return calendarSignalCandidates
+    end
+    local list, seen = {}, {}
+    AddCalendarSignalCandidate(list, seen, texture)
+    AddCalendarSignalCandidate(list, seen, _G.GameTimeCalendarInvitesGlow)
+    AddCalendarSignalCandidate(list, seen, _G.GameTimeFrameCalendarInvitesTexture)
+    AddCalendarSignalCandidate(list, seen, _G.GameTimeFrameCalendarInvitesGlow)
+    if frame then
+        for _, key in ipairs(calendarInviteTextureKeys) do
+            AddCalendarSignalCandidate(list, seen, frame[key])
+        end
+    end
+    calendarSignalCandidates, calendarSignalFrame, calendarSignalTexture = list, frame, texture
+    return list
+end
+
+function QMT:InvalidateCalendarSignalCache()
+    calendarSignalCandidates, calendarSignalFrame, calendarSignalTexture = nil, nil, nil
 end
 
 function QMT:GetNativeCalendarInviteSignal()
@@ -209,21 +251,7 @@ function QMT:GetNativeCalendarInviteSignal()
         if type(count) == "number" then return count > 0, 1 end
     end
 
-    local shown, alpha = false, 1
-    local candidates = {}
-    AddCalendarSignalCandidate(candidates, _G.GameTimeCalendarInvitesTexture)
-    AddCalendarSignalCandidate(candidates, _G.GameTimeCalendarInvitesGlow)
-    AddCalendarSignalCandidate(candidates, _G.GameTimeFrameCalendarInvitesTexture)
-    AddCalendarSignalCandidate(candidates, _G.GameTimeFrameCalendarInvitesGlow)
-
-    local frame = _G.GameTimeFrame
-    if frame then
-        for _, key in ipairs(calendarInviteTextureKeys) do
-            AddCalendarSignalCandidate(candidates, frame[key])
-        end
-    end
-
-    for _, obj in ipairs(candidates) do
+    for _, obj in ipairs(GetCalendarSignalCandidates()) do
         if SafeCall(obj.IsShown, obj) then
             local a = 1
             if obj.GetAlpha then
@@ -233,7 +261,7 @@ function QMT:GetNativeCalendarInviteSignal()
             if a > 0.02 then return true, a end
         end
     end
-    return shown, alpha
+    return false, 1
 end
 
 function QMT:HasCalendarNotification()
@@ -248,9 +276,10 @@ function QMT:UpdateCalendarNotificationIndicator()
     if not bang then return false end
 
     local shown, alpha = self:GetNativeCalendarInviteSignal()
-    local stateKey = (shown and "1" or "0") .. ":" .. tostring(math.floor((alpha or 1) * 10))
-    if bang.__qfxBangState ~= stateKey then
-        bang.__qfxBangState = stateKey
+    local alphaBucket = math.floor((alpha or 1) * 10)
+    if bang.__qfxBangShown ~= shown or bang.__qfxBangAlpha ~= alphaBucket then
+        bang.__qfxBangShown = shown
+        bang.__qfxBangAlpha = alphaBucket
         if shown then
             bang:SetText("!")
             bang:SetAlpha(alpha or 1)
@@ -287,14 +316,17 @@ function QMT:GetSystemText()
     if GetNetStats then down, up, home, world = GetNetStats() end
     local accent = DisplayAccentHex()
     local text = self.db.display.systemString or "%fps | %home"
-    local replacements = {
-        ["%%fps"] = tostring(fps) .. ColorText(" FPS", accent),
-        ["%%home"] = tostring(math.floor(home or 0)) .. ColorText(" MS", accent),
-        ["%%world"] = tostring(math.floor(world or 0)) .. ColorText(" MS", accent),
-        ["%%down"] = tostring(math.floor(down or 0)),
-        ["%%up"] = tostring(math.floor(up or 0)),
-    }
-    for token, value in pairs(replacements) do text = text:gsub(token, value) end
+    -- The default format is used by almost everyone. Formatting it directly
+    -- avoids five gsub passes and a temporary replacement table every 5s.
+    if text == "%fps | %home" then
+        return tostring(fps) .. ColorText(" FPS", accent)
+            .. " | " .. tostring(math.floor(home or 0)) .. ColorText(" MS", accent)
+    end
+    text = text:gsub("%%fps", tostring(fps) .. ColorText(" FPS", accent))
+    text = text:gsub("%%home", tostring(math.floor(home or 0)) .. ColorText(" MS", accent))
+    text = text:gsub("%%world", tostring(math.floor(world or 0)) .. ColorText(" MS", accent))
+    text = text:gsub("%%down", tostring(math.floor(down or 0)))
+    text = text:gsub("%%up", tostring(math.floor(up or 0)))
     return text
 end
 
@@ -350,15 +382,16 @@ function QMT:TryCachePhaseIDFromUnit(unit)
     return nil
 end
 
+local QFX_PHASE_UNITS = {"mouseover", "target"}
+
 function QMT:DetectPhaseID(preferredUnit)
     if preferredUnit then
         local preferredPhaseID = self:TryCachePhaseIDFromUnit(preferredUnit)
         if preferredPhaseID then return preferredPhaseID end
     end
 
-    local units = {"mouseover", "target"}
-    for i = 1, #units do
-        local phaseID = self:TryCachePhaseIDFromUnit(units[i])
+    for i = 1, #QFX_PHASE_UNITS do
+        local phaseID = self:TryCachePhaseIDFromUnit(QFX_PHASE_UNITS[i])
         if phaseID then return phaseID end
     end
 
@@ -431,17 +464,20 @@ function QMT:UpdateOneStat(key)
     local frame = self.statFrames[key]
     if not frame then return end
     local d = self.db.display
+    -- Resolve this once per stat instead of repeatedly walking the minimap /
+    -- flight state for the same value.
+    local utilityRow = self.ShouldUseUtilityRow and self:ShouldUseUtilityRow() or false
     local enabled = d[key] == true
     if key == "time" then
-        if self.ShouldUseUtilityRow and self:ShouldUseUtilityRow() then
+        if utilityRow then
             enabled = d.time == true
         else
             enabled = d.time == true or d.coordinates == true
         end
     end
-    if key == "system" and self.ShouldUseUtilityRow and self:ShouldUseUtilityRow() then
+    if key == "system" and utilityRow then
         enabled = false
-    elseif key == "coordinates" and (d.time or (self.ShouldUseUtilityRow and self:ShouldUseUtilityRow())) then
+    elseif key == "coordinates" and (d.time or utilityRow) then
         enabled = false
     elseif key == "difficulty" and self.HasNativeDifficultyFrame and self:HasNativeDifficultyFrame() then
         -- Only hide the text when a real native badge exists. Camelot removes
@@ -452,11 +488,17 @@ function QMT:UpdateOneStat(key)
         enabled = false
     end
     local text = ""
-    if key == "location" and d.location then text = self:GetLocationText()
-    elseif key == "coordinates" and d.coordinates then text = self:GetCoordinatesText()
-    elseif key == "time" and (d.time or d.coordinates) then text = self:GetTimeCoordinatesText()
-    elseif key == "system" and d.system then text = self:GetSystemText()
-    elseif key == "difficulty" and d.difficulty then text = self:GetDifficultyText() end
+    -- Only build text for a stat that can actually be shown. This avoids a
+    -- C_Map coordinate lookup while the utility row owns coordinates, and a
+    -- GetInstanceInfo call on every roster update when Blizzard's own
+    -- difficulty badge is in use.
+    if enabled then
+        if key == "location" and d.location then text = self:GetLocationText()
+        elseif key == "coordinates" and d.coordinates then text = self:GetCoordinatesText()
+        elseif key == "time" and (d.time or d.coordinates) then text = self:GetTimeCoordinatesText()
+        elseif key == "system" and d.system then text = self:GetSystemText()
+        elseif key == "difficulty" and d.difficulty then text = self:GetDifficultyText() end
+    end
     if frame.__qfxStatText ~= text then
         frame.Text:SetText(text)
         frame.__qfxStatText = text
@@ -491,9 +533,10 @@ function QMT:UpdateOneStat(key)
             bangW = frame.CalendarBang:GetStringWidth() or 0
             gap = 3
         end
-        local layoutKey = (bangVisible and "1" or "0") .. ":" .. tostring(textW) .. ":" .. tostring(bangW)
-        if frame.__qfxTimeLayoutKey ~= layoutKey then
-            frame.__qfxTimeLayoutKey = layoutKey
+        local timeState = frame.__qfxTimeLayoutState
+        if not timeState or timeState.visible ~= bangVisible
+            or timeState.textW ~= textW or timeState.bangW ~= bangW then
+            frame.__qfxTimeLayoutState = {visible = bangVisible, textW = textW, bangW = bangW}
             frame:SetSize(math.max(10, textW + bangW + gap), math.max(10, textH))
             frame.Text:ClearAllPoints()
             frame.Text:SetPoint("CENTER", frame, "CENTER", -((bangW + gap) * 0.5), 0)
@@ -587,6 +630,24 @@ function QMT:CancelStatTickers()
     QFXCancelTicker(self, "timeTicker")
 end
 
+local function QFXSystemTickerCallback()
+    local cfg = QMT.db and QMT.db.display
+    if not cfg or not cfg.system then return end
+    if QMT.ShouldUseUtilityRow and QMT:ShouldUseUtilityRow() then
+        SafeCall(QMT.UpdateUtilitySystemText, QMT)
+    else
+        SafeCall(QMT.UpdateOneStat, QMT, "system")
+    end
+end
+
+local function QFXTimeTickerCallback()
+    local cfg = QMT.db and QMT.db.display
+    if cfg and cfg.time then SafeCall(QMT.UpdateOneStat, QMT, "time") end
+    if QMT.ShouldUseUtilityRow and QMT:ShouldUseUtilityRow() then
+        SafeCall(QMT.UpdateTimeStatusIcons, QMT)
+    end
+end
+
 function QMT:RefreshStatUpdaterState()
     local d = self.db and self.db.display
     if not d then return end
@@ -603,27 +664,13 @@ function QMT:RefreshStatUpdaterState()
     end
 
     if d.system then
-        self:EnsureStatTicker("system", math.max(5, tonumber(d.systemInterval or 5) or 5), function()
-            local cfg = QMT.db and QMT.db.display
-            if not cfg or not cfg.system then return end
-            if QMT.ShouldUseUtilityRow and QMT:ShouldUseUtilityRow() then
-                SafeCall(QMT.UpdateUtilitySystemText, QMT)
-            else
-                SafeCall(QMT.UpdateOneStat, QMT, "system")
-            end
-        end)
+        self:EnsureStatTicker("system", math.max(5, tonumber(d.systemInterval or 5) or 5), QFXSystemTickerCallback)
     else
         QFXCancelTicker(self, "systemTicker")
     end
 
     if NeedsMinuteTicker(self.db) then
-        self:EnsureAlignedMinuteTicker(function()
-            local cfg = QMT.db and QMT.db.display
-            if cfg and cfg.time then SafeCall(QMT.UpdateOneStat, QMT, "time") end
-            if QMT.ShouldUseUtilityRow and QMT:ShouldUseUtilityRow() then
-                SafeCall(QMT.UpdateTimeStatusIcons, QMT)
-            end
-        end)
+        self:EnsureAlignedMinuteTicker(QFXTimeTickerCallback)
     else
         QFXCancelTicker(self, "timeTicker")
     end

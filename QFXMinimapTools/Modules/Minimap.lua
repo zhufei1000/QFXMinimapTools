@@ -370,23 +370,24 @@ function QMT:RefreshMinimapAttachedElements(updateStats, layoutBag)
     end
 end
 
+local function QFXFlushAttachedElementRefresh()
+    QMT.attachedRefreshQueued = false
+    local doStats = QMT.refreshStatsQueued
+    local doLayout = QMT.refreshBagLayoutQueued
+    QMT.refreshStatsQueued = false
+    QMT.refreshBagLayoutQueued = false
+    SafeCall(QMT.RefreshMinimapAttachedElements, QMT, doStats, doLayout)
+end
+
 function QMT:RequestAttachedElementRefresh(updateStats, layoutBag)
     self.refreshStatsQueued = self.refreshStatsQueued or updateStats
     self.refreshBagLayoutQueued = self.refreshBagLayoutQueued or layoutBag
     if self.attachedRefreshQueued then return end
     self.attachedRefreshQueued = true
-    local function Flush()
-        QMT.attachedRefreshQueued = false
-        local doStats = QMT.refreshStatsQueued
-        local doLayout = QMT.refreshBagLayoutQueued
-        QMT.refreshStatsQueued = false
-        QMT.refreshBagLayoutQueued = false
-        SafeCall(QMT.RefreshMinimapAttachedElements, QMT, doStats, doLayout)
-    end
     if C_Timer and C_Timer.After then
-        C_Timer.After(0, Flush)
+        C_Timer.After(0, QFXFlushAttachedElementRefresh)
     else
-        Flush()
+        QFXFlushAttachedElementRefresh()
     end
 end
 
@@ -398,12 +399,26 @@ local function QFXAddUniqueFrame(list, seen, frame)
     end
 end
 
+-- Native frame lookups are constant in practice, but the old implementations
+-- allocated one or two fresh tables on every call. These lists are scanned by
+-- mail/queue/difficulty refreshes during every zone change, so cache the list
+-- and rebuild it only when one of its source references actually changes.
 function QMT:GetNativeQueueFrames()
+    local cluster = MinimapCluster
+    local s1, s2 = _G.QueueStatusMinimapButton, _G.QueueStatusButton
+    local s3 = cluster and cluster.QueueStatusMinimapButton
+    local s4 = cluster and cluster.QueueStatusButton
+    local cache = self.nativeQueueFrameCache
+    if cache and cache[2] == s1 and cache[3] == s2 and cache[4] == s3 and cache[5] == s4 then
+        return cache[1]
+    end
     local frames, seen = {}, {}
-    QFXAddUniqueFrame(frames, seen, _G.QueueStatusMinimapButton)
-    QFXAddUniqueFrame(frames, seen, _G.QueueStatusButton)
-    QFXAddUniqueFrame(frames, seen, MinimapCluster and MinimapCluster.QueueStatusMinimapButton)
-    QFXAddUniqueFrame(frames, seen, MinimapCluster and MinimapCluster.QueueStatusButton)
+    QFXAddUniqueFrame(frames, seen, s1)
+    QFXAddUniqueFrame(frames, seen, s2)
+    QFXAddUniqueFrame(frames, seen, s3)
+    QFXAddUniqueFrame(frames, seen, s4)
+    cache = {frames, s1, s2, s3, s4}
+    self.nativeQueueFrameCache = cache
     return frames
 end
 
@@ -450,18 +465,26 @@ local function QFXRestoreNativeQueueFrame(frame, original)
 end
 
 
-function QMT:ApplyQueueStatusButtonPosition()
+function QMT:ApplyQueueStatusButtonPosition(force)
     if not Minimap then return end
     local frames = self:GetNativeQueueFrames()
     if not frames or #frames == 0 then return end
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
+    local clean = self:ShouldCleanSquareMinimap()
+    local level = Minimap.GetFrameLevel and Minimap:GetFrameLevel() or 0
+    local state = self.queueStatusLayoutState
+    if not force and state and state.clean == clean and state.flight == flightActive
+        and state.frames == frames and state.level == level then
+        return
+    end
 
-    if not self:ShouldCleanSquareMinimap() then
+    if not clean then
         for _, q in ipairs(frames) do
             SafeCall(self.SetFrameFlightSuppressed, self, q, false)
             QFXRestoreNativeQueueFrame(q, self.queueStatusOriginal and self.queueStatusOriginal[q])
             if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, q, true) end
         end
+        self.queueStatusLayoutState = {clean = clean, flight = flightActive, frames = frames, level = level}
         return
     end
 
@@ -487,30 +510,38 @@ function QMT:ApplyQueueStatusButtonPosition()
 
         if q.HookScript and not q.QFXMinimapToolsQueueHooked then
             q:HookScript("OnShow", function()
-                QMT:ApplyQueueStatusButtonPosition()
+                -- Blizzard just changed the frame; force one real re-apply even
+                -- though the layout inputs themselves look unchanged.
+                QMT:ApplyQueueStatusButtonPosition(true)
             end)
             q.QFXMinimapToolsQueueHooked = true
         end
     end
+    self.queueStatusLayoutState = {clean = clean, flight = flightActive, frames = frames, level = level}
 end
 
 function QMT:GetNativeMailFrames()
-    local frames, seen = {}, {}
-    local function Add(frame)
-        if frame and not seen[frame] then
-            seen[frame] = true
-            frames[#frames + 1] = frame
-        end
-    end
-
-    local indicator = MinimapCluster and MinimapCluster.IndicatorFrame
+    local cluster = MinimapCluster
+    local indicator = cluster and cluster.IndicatorFrame
     -- Retail 10.0.5+ keeps the native mail indicator here. Keep the older
     -- aliases as fallbacks for other client branches and compatibility UIs.
-    Add(indicator and indicator.MailFrame)
-    Add(indicator and indicator.MailIndicator)
-    Add(MinimapCluster and MinimapCluster.MailFrame)
-    Add(_G.MiniMapMailFrame)
-    Add(_G.MinimapMailFrame)
+    local s1 = indicator and indicator.MailFrame
+    local s2 = indicator and indicator.MailIndicator
+    local s3 = cluster and cluster.MailFrame
+    local s4, s5 = _G.MiniMapMailFrame, _G.MinimapMailFrame
+    local cache = self.nativeMailFrameCache
+    if cache and cache[2] == s1 and cache[3] == s2 and cache[4] == s3
+        and cache[5] == s4 and cache[6] == s5 then
+        return cache[1]
+    end
+    local frames, seen = {}, {}
+    QFXAddUniqueFrame(frames, seen, s1)
+    QFXAddUniqueFrame(frames, seen, s2)
+    QFXAddUniqueFrame(frames, seen, s3)
+    QFXAddUniqueFrame(frames, seen, s4)
+    QFXAddUniqueFrame(frames, seen, s5)
+    cache = {frames, s1, s2, s3, s4, s5}
+    self.nativeMailFrameCache = cache
     return frames
 end
 
@@ -564,9 +595,18 @@ function QMT:RestoreNativeMailFrame()
 end
 
 
-function QMT:ApplyMailFramePosition()
+function QMT:ApplyMailFramePosition(force)
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local useCustom = self:ShouldUseCustomMailIndicator()
+    local frames = self:GetNativeMailFrames()
+    local state = self.mailFrameLayoutState
+    if not force and state and state.custom == useCustom and state.flight == flightActive
+        and state.frames == frames then
+        -- Mail arrival/removal events still need to refresh the custom calendar
+        -- row icon even when the native-frame suppression did not change.
+        SafeCall(self.UpdateTimeStatusIcons, self)
+        return
+    end
 
     if useCustom or flightActive then
         -- Suppress every known Blizzard mail-frame alias. Retail moved the
@@ -574,7 +614,7 @@ function QMT:ApplyMailFramePosition()
         -- old MiniMapMailFrame global may still exist as a separate object.
         -- During flight center the native indicator must stay suppressed too,
         -- otherwise it can reappear at the old top-right cluster position.
-        for _, mail in ipairs(self:GetNativeMailFrames()) do
+        for _, mail in ipairs(frames) do
             self:CaptureNativeMailFrame(mail)
             if flightActive then
                 SafeCall(self.SetFrameFlightSuppressed, self, mail, true)
@@ -610,12 +650,13 @@ function QMT:ApplyMailFramePosition()
 
         SafeCall(self.UpdateTimeStatusIcons, self)
     else
-        for _, mail in ipairs(self:GetNativeMailFrames()) do
+        for _, mail in ipairs(frames) do
             SafeCall(self.SetFrameFlightSuppressed, self, mail, false)
         end
         self:RestoreNativeMailFrame()
         SafeCall(self.UpdateTimeStatusIcons, self)
     end
+    self.mailFrameLayoutState = {custom = useCustom, flight = flightActive, frames = frames}
 end
 
 
@@ -796,13 +837,24 @@ function QMT:GetCustomIndicatorColor()
     return Clamp(tonumber(c[1]) or 1, 0, 1), Clamp(tonumber(c[2]) or 1, 0, 1), Clamp(tonumber(c[3]) or 1, 0, 1)
 end
 
+local classIndicatorColorR, classIndicatorColorG, classIndicatorColorB
+function QMT:ClearIndicatorClassColorCache()
+    classIndicatorColorR, classIndicatorColorG, classIndicatorColorB = nil, nil, nil
+end
+
+local function GetCachedClassColor()
+    if classIndicatorColorR then return classIndicatorColorR, classIndicatorColorG, classIndicatorColorB end
+    local classFile = UnitClass and select(2, UnitClass("player"))
+    local color = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
+    if not color then return 1, 1, 1 end
+    classIndicatorColorR, classIndicatorColorG, classIndicatorColorB = color.r, color.g, color.b
+    return classIndicatorColorR, classIndicatorColorG, classIndicatorColorB
+end
+
 function QMT:GetIndicatorColor()
     local db = self.db and self.db.minimap or {}
     if db.indicatorColorMode == "CLASS" then
-        local classFile = UnitClass and select(2, UnitClass("player"))
-        local color = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-        if color then return color.r, color.g, color.b end
-        return 1, 1, 1
+        return GetCachedClassColor()
     end
     return self:GetCustomIndicatorColor()
 end
@@ -1003,8 +1055,10 @@ function QMT:CreateIndicatorButton(key)
     -- glass panels look like they were not implemented. The buttons are still
     -- positioned relative to Minimap through the utility row.
     local parent = UIParent or Minimap
-    local template = BackdropTemplateMixin and "BackdropTemplate" or nil
-    local btn = CreateFrame("Button", "QFXMinimapToolsIndicator_" .. key, parent, template)
+    -- These buttons only ever show a texture and a font string. The old
+    -- BackdropTemplate plus a fully transparent WHITE8X8 backdrop cost an extra
+    -- backdrop object on every indicator for no visible pixels.
+    local btn = CreateFrame("Button", "QFXMinimapToolsIndicator_" .. key, parent)
     btn.IndicatorKey = key
     local buttonSize = self:GetIndicatorButtonSize()
     btn:SetSize(buttonSize, buttonSize)
@@ -1012,11 +1066,6 @@ function QMT:CreateIndicatorButton(key)
     btn:SetFrameLevel(360)
     btn:SetHitRectInsets(-3, -3, -3, -3)
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    if btn.SetBackdrop then
-        btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
-        btn:SetBackdropColor(0, 0, 0, 0)
-        btn:SetBackdropBorderColor(0, 0, 0, 0)
-    end
 
     -- No glass highlight texture is created for text widgets. Keeping the
     -- bottom row as plain text lowers texture count and avoids overlaying
@@ -1057,6 +1106,54 @@ function QMT:CreateIndicatorButton(key)
     btn:SetScript("OnHide", function(self)
         QMT:SetIndicatorHovered(self, false)
     end)
+    -- Tooltip/click handlers only read live state, so create them once instead
+    -- of allocating three closures every time the day/mail/crafting state flips.
+    if key == "calendar" then
+        btn:SetScript("OnEnter", function(owner)
+            QMT:SetIndicatorHovered(owner, true)
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(L.CALENDAR_TITLE)
+            GameTooltip:AddLine(L.CALENDAR_OPEN, 1, 1, 1)
+            if QMT:HasCalendarNotification() then
+                GameTooltip:AddLine(L.CALENDAR_PENDING or "Pending invites", 1, 0.82, 0.1, true)
+            end
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnClick", function(_, button)
+            if button == "LeftButton" and ToggleCalendar then ToggleCalendar() end
+        end)
+    elseif key == "mail" then
+        btn:SetScript("OnEnter", function(owner)
+            QMT:SetIndicatorHovered(owner, true)
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(L.MAIL_PENDING)
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnClick", function(_, button)
+            QFXClickNativeFrame(QMT:GetNativeMailFrame(), button)
+        end)
+    elseif key == "crafting" then
+        btn:SetScript("OnEnter", function(owner)
+            QMT:SetIndicatorHovered(owner, true)
+            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
+            GameTooltip:AddLine(L.CRAFTING_ORDERS_TITLE)
+            local info = C_CraftingOrders and C_CraftingOrders.GetPersonalOrdersInfo
+                and SafeCall(C_CraftingOrders.GetPersonalOrdersInfo)
+            if type(info) == "table" then
+                for _, order in pairs(info) do
+                    local name = order.professionName or order.name
+                    local count = order.numPersonalOrders or order.numOrders
+                    if name and count then
+                        GameTooltip:AddDoubleLine(tostring(name), tostring(count), 1, 1, 1, 1, 1, 1)
+                    end
+                end
+            end
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnClick", function(_, button)
+            QFXClickNativeFrame(QMT:GetNativeCraftingOrderFrame(), button)
+        end)
+    end
     btn:Hide()
     self.indicatorButtons[key] = btn
     return btn
@@ -1067,14 +1164,35 @@ function QMT:UpdateCalendarDate(btn, day)
     btn.CalendarDay = day
     local size = (btn.IconSize or self:GetUtilityIconSize()) * (btn.IconHovered and 1.12 or 1)
     local d = self.db and self.db.display or {}
-    local font = self.ResolveFontPath(d.font)
     local text = btn.CalendarDate
-    self.ApplyFontStringFont(text, font, math.floor(size * 0.48 + 0.5), "")
-    text:ClearAllPoints()
-    -- The blank body spans y=10..20 in the original 24x24 vector.
-    text:SetPoint("CENTER", btn.Icon, "CENTER", 0, -size * 3 / 24)
-    text:SetSize(size * 14 / 24, size * 10 / 24)
-    text:SetText(tostring(day))
+
+    -- Hovering an icon calls this on every enter/leave. Re-applying the font,
+    -- anchors and text each time churns the client's font layout for no change.
+    local fontSource = d.font
+    local font = btn.__qfxCalendarFont
+    if not btn.__qfxCalendarFontResolved or btn.__qfxCalendarFontSource ~= fontSource then
+        btn.__qfxCalendarFontResolved = true
+        btn.__qfxCalendarFontSource = fontSource
+        font = self.ResolveFontPath(fontSource)
+        btn.__qfxCalendarFont = font
+        btn.__qfxCalendarFontSize = nil
+    end
+    local fontSize = math.floor(size * 0.48 + 0.5)
+    if btn.__qfxCalendarFontSize ~= fontSize then
+        btn.__qfxCalendarFontSize = fontSize
+        self.ApplyFontStringFont(text, font, fontSize, "")
+    end
+    if btn.__qfxCalendarGeometrySize ~= size then
+        btn.__qfxCalendarGeometrySize = size
+        text:ClearAllPoints()
+        -- The blank body spans y=10..20 in the original 24x24 vector.
+        text:SetPoint("CENTER", btn.Icon, "CENTER", 0, -size * 3 / 24)
+        text:SetSize(size * 14 / 24, size * 10 / 24)
+    end
+    if btn.__qfxCalendarDay ~= day then
+        btn.__qfxCalendarDay = day
+        text:SetText(tostring(day))
+    end
     text:Show()
 end
 
@@ -1107,7 +1225,9 @@ function QMT:ShowIndicatorIcon(btn, atlas, fallback)
     btn:SetSize(buttonSize, buttonSize)
 end
 
-function QMT:LayoutIndicatorColumn()
+local QFX_INDICATOR_MASK = {1, 2, 4, 8}
+
+function QMT:LayoutIndicatorColumn(force)
     if not Minimap or not self.indicatorButtons then return end
     local minimapDB = self.db and self.db.minimap or {}
     local direction = minimapDB.indicatorDirection
@@ -1115,8 +1235,46 @@ function QMT:LayoutIndicatorColumn()
         direction = "DOWN"
     end
     local spacing = self:GetIndicatorSpacing()
-    local level = math.max((Minimap:GetFrameLevel() or 0) + 43,
-        (self.bagButton and self.bagButton:GetFrameLevel() or 0) + 1)
+    local bagLevel = self.bagButton and self.bagButton:GetFrameLevel() or 0
+    local level = math.max((Minimap:GetFrameLevel() or 0) + 43, bagLevel + 1)
+    local anchor = self:GetIndicatorAnchor()
+    local layer = self:GetIndicatorLayer()
+    local iconSize = self:GetUtilityIconSize()
+    local q = self.bagButton and self.bagButton:IsShown() and self.bagButton or nil
+    local pinTail = q and anchor == "Q" and self.bagPinTails and self.bagPinTails[direction] or nil
+    local mapW = Minimap.GetWidth and Minimap:GetWidth() or 0
+    local mapH = Minimap.GetHeight and Minimap:GetHeight() or 0
+    local border = 0
+    if minimapDB.square and minimapDB.borderEnabled ~= false then
+        border = tonumber(minimapDB.borderSize) or 3
+    end
+    local shownMask, sizeSum = 0, 0
+    for index, key in ipairs(QFX_INDICATOR_ORDER) do
+        local btn = self.indicatorButtons[key]
+        if btn and btn:IsShown() then
+            shownMask = shownMask + QFX_INDICATOR_MASK[index]
+            sizeSum = sizeSum + (btn.GetWidth and btn:GetWidth() or 0)
+                + (btn.GetHeight and btn:GetHeight() or 0)
+        end
+    end
+
+    -- Most refreshes (zone changes, mail, roster, bag visibility) do not change
+    -- any layout input. Skip the anchoring work and, more importantly, the old
+    -- per-icon region scan that allocated strings on every layout pass.
+    local state = self.indicatorLayoutState
+    if not force and state and state.direction == direction and state.spacing == spacing
+        and state.level == level and state.anchor == anchor and state.layer == layer
+        and state.iconSize == iconSize and state.q == q and state.pinTail == pinTail
+        and state.mapW == mapW and state.mapH == mapH and state.border == border
+        and state.shownMask == shownMask and state.sizeSum == sizeSum then
+        return
+    end
+    local newState = {
+        direction = direction, spacing = spacing, level = level, anchor = anchor,
+        layer = layer, iconSize = iconSize, q = q, pinTail = pinTail,
+        mapW = mapW, mapH = mapH, border = border,
+        shownMask = shownMask, sizeSum = sizeSum,
+    }
 
     local function Place(btn, relativeTo, relativePoint, x, y, point)
         btn:SetParent(Minimap)
@@ -1125,18 +1283,15 @@ function QMT:LayoutIndicatorColumn()
         btn:SetHitRectInsets(-3, -3, -3, -3)
         btn:ClearAllPoints()
         btn:SetPoint(point or "CENTER", relativeTo, relativePoint, x, y)
-        self:StripIconBackgroundAndBorder(btn)
     end
 
-    if self:GetIndicatorAnchor() == "Q" then
+    if anchor == "Q" then
         -- Existing behavior: grow away from the Q button in the chosen direction.
-        local q = self.bagButton and self.bagButton:IsShown() and self.bagButton or nil
         local previous = q or Minimap
         local relativePoint = q and "CENTER" or "LEFT"
         local baseX = q and 0 or -1
         local previousWidth = q and q:GetWidth() or 0
         local previousHeight = q and q:GetHeight() or 0
-        local pinTail = q and self.bagPinTails and self.bagPinTails[direction]
         for _, key in ipairs(QFX_INDICATOR_ORDER) do
             local btn = self.indicatorButtons[key]
             if btn and btn:IsShown() then
@@ -1165,22 +1320,15 @@ function QMT:LayoutIndicatorColumn()
                 baseX = 0
             end
         end
+        self.indicatorLayoutState = newState
         return
     end
 
     -- Free placement on one of the eight minimap anchors. The layer controls
     -- whether the first icon is centered on, outside, or inside the square border.
-    local normal = QFX_INDICATOR_ANCHORS[self:GetIndicatorAnchor()]
-    local iconSize = self:GetUtilityIconSize()
-    local mapW = Minimap.GetWidth and Minimap:GetWidth() or 0
-    local mapH = Minimap.GetHeight and Minimap:GetHeight() or 0
+    local normal = QFX_INDICATOR_ANCHORS[anchor]
     if mapW <= 0 then mapW = 198 end
     if mapH <= 0 then mapH = 198 end
-    local border = 0
-    if minimapDB.square and minimapDB.borderEnabled ~= false then
-        border = tonumber(minimapDB.borderSize) or 3
-    end
-    local layer = self:GetIndicatorLayer()
     local pad
     if layer == "OUTSIDE" then
         pad = iconSize * 0.5 + border
@@ -1210,6 +1358,7 @@ function QMT:LayoutIndicatorColumn()
             Place(btn, Minimap, "CENTER", x, y)
         end
     end
+    self.indicatorLayoutState = newState
 end
 
 function QMT:ShouldUseUtilityRow()
@@ -1239,21 +1388,27 @@ function QMT:GetUtilityRow()
 end
 
 function QMT:GetNativeCraftingOrderFrames()
-    local frames, seen = {}, {}
-    local function Add(frame)
-        if frame and not seen[frame] then
-            seen[frame] = true
-            frames[#frames + 1] = frame
-        end
+    local cluster = MinimapCluster
+    local indicator = cluster and cluster.IndicatorFrame
+    local s1 = indicator and indicator.CraftingOrderFrame
+    local s2 = indicator and indicator.CraftingOrdersFrame
+    local s3 = cluster and cluster.CraftingOrderFrame
+    local s4, s5 = _G.CraftingOrderFrame, _G.ProfessionsCustomerOrdersFrame
+    local s6 = _G.ProfessionsCustomerOrders_MinimapButton
+    local cache = self.nativeCraftingFrameCache
+    if cache and cache[2] == s1 and cache[3] == s2 and cache[4] == s3
+        and cache[5] == s4 and cache[6] == s5 and cache[7] == s6 then
+        return cache[1]
     end
-
-    local indicator = MinimapCluster and MinimapCluster.IndicatorFrame
-    Add(indicator and indicator.CraftingOrderFrame)
-    Add(indicator and indicator.CraftingOrdersFrame)
-    Add(MinimapCluster and MinimapCluster.CraftingOrderFrame)
-    Add(_G.CraftingOrderFrame)
-    Add(_G.ProfessionsCustomerOrdersFrame)
-    Add(_G.ProfessionsCustomerOrders_MinimapButton)
+    local frames, seen = {}, {}
+    QFXAddUniqueFrame(frames, seen, s1)
+    QFXAddUniqueFrame(frames, seen, s2)
+    QFXAddUniqueFrame(frames, seen, s3)
+    QFXAddUniqueFrame(frames, seen, s4)
+    QFXAddUniqueFrame(frames, seen, s5)
+    QFXAddUniqueFrame(frames, seen, s6)
+    cache = {frames, s1, s2, s3, s4, s5, s6}
+    self.nativeCraftingFrameCache = cache
     return frames
 end
 
@@ -1358,8 +1513,9 @@ end
 function QMT:ApplyUtilityTextFont(frame)
     if not frame or not frame.Text then return end
     local d = self.db and self.db.display or {}
-    local font = d.font
-    if self.ResolveFontPath then font = self.ResolveFontPath(font) end
+    local source = d.font
+    local font = source
+    if self.ResolveFontPath then font = self.ResolveFontPath(source) end
     local size = tonumber(d.fontSize) or 12
     local outline = d.outline or "OUTLINE"
     if self.ApplyFontStringFont then
@@ -1373,7 +1529,11 @@ function QMT:ApplyUtilityTextFont(frame)
     else
         frame.Text:SetShadowOffset(0, 0)
     end
-    frame.__qfxFontKey = tostring(font or "") .. ":" .. tostring(size) .. ":" .. tostring(outline) .. ":" .. tostring(d.shadow and 1 or 0)
+    frame.__qfxFontSource = source
+    frame.__qfxFont = font
+    frame.__qfxFontSize = size
+    frame.__qfxOutline = outline
+    frame.__qfxShadow = d.shadow and true or false
 end
 
 function QMT:CreateUtilityTextFrame(key)
@@ -1435,10 +1595,13 @@ function QMT:SetUtilityText(frame, text, minWidth, r, g, b)
     text = text or ""
     local changed = false
     local d = self.db and self.db.display or {}
-    local font = d.font
-    if self.ResolveFontPath then font = self.ResolveFontPath(font) end
-    local fontKey = tostring(font or "") .. ":" .. tostring(tonumber(d.fontSize) or 12) .. ":" .. tostring(d.outline or "OUTLINE") .. ":" .. tostring(d.shadow and 1 or 0)
-    if frame.__qfxFontKey ~= fontKey then
+    local size = tonumber(d.fontSize) or 12
+    local outline = d.outline or "OUTLINE"
+    local shadow = d.shadow and true or false
+    -- Compare the raw option values instead of building a key string on every
+    -- 5s / 0.5s refresh.
+    if frame.__qfxFontSource ~= d.font or frame.__qfxFontSize ~= size
+        or frame.__qfxOutline ~= outline or frame.__qfxShadow ~= shadow then
         self:ApplyUtilityTextFont(frame)
         frame.__qfxLastWidth = nil
         changed = true
@@ -1450,10 +1613,9 @@ function QMT:SetUtilityText(frame, text, minWidth, r, g, b)
         changed = true
     end
     local cr, cg, cb = r or 1, g or 1, b or 1
-    local colorKey = tostring(cr) .. ":" .. tostring(cg) .. ":" .. tostring(cb)
-    if frame.__qfxColorKey ~= colorKey then
+    if frame.__qfxColorR ~= cr or frame.__qfxColorG ~= cg or frame.__qfxColorB ~= cb then
+        frame.__qfxColorR, frame.__qfxColorG, frame.__qfxColorB = cr, cg, cb
         frame.Text:SetTextColor(cr, cg, cb, 1)
-        frame.__qfxColorKey = colorKey
     end
     local textW = frame.__qfxLastWidth
     if not textW then
@@ -1570,13 +1732,19 @@ function QMT:UpdateUtilityPhaseText(skipLayout)
     return changed
 end
 
+local calendarRuleChecked, calendarRuleDisabled
 local function IsCalendarDisabledByRuleset()
+    if calendarRuleChecked then return calendarRuleDisabled end
     local rules = Enum and Enum.GameRule
     if not (C_GameRules and C_GameRules.IsGameRuleActive and rules and rules.IngameCalendarDisabled) then
+        -- Do not cache an unavailable API during early loading; a later call
+        -- after PLAYER_LOGIN should be allowed to resolve the game rule.
         return false
     end
     local ok, disabled = pcall(C_GameRules.IsGameRuleActive, rules.IngameCalendarDisabled)
-    return ok and disabled == true
+    calendarRuleChecked = true
+    calendarRuleDisabled = ok and disabled == true
+    return calendarRuleDisabled
 end
 
 function QMT:UpdateTimeStatusIcons(skipLayout)
@@ -1593,21 +1761,21 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     local hasCrafting = indicatorsUsable and self:HasCraftingOrderIndicator() or false
     local suppressNativeCrafting = self:ShouldSuppressNativeCraftingOrderFrame() and true or false
 
-    local signature = table.concat({
-        indicatorsUsable and "1" or "0",
-        calendarUsable and "1" or "0",
-        tostring(self:GetUtilityIconSize()),
-        tostring(d.font or "AUTO"),
-        tostring(day),
-        hasMail and "1" or "0",
-        hasCrafting and "1" or "0",
-        suppressNativeCrafting and "1" or "0",
-    }, "|")
-    if self.timeStatusIconSignature == signature then
+    local iconSize = self:GetUtilityIconSize()
+    local font = d.font or "AUTO"
+    local state = self.timeStatusIconState
+    if state and state.usable == indicatorsUsable and state.calendar == calendarUsable
+        and state.iconSize == iconSize and state.font == font and state.day == day
+        and state.mail == hasMail and state.crafting == hasCrafting
+        and state.suppressCrafting == suppressNativeCrafting then
         self:LayoutIndicatorColumn()
         return
     end
-    self.timeStatusIconSignature = signature
+    local newState = {
+        usable = indicatorsUsable, calendar = calendarUsable, iconSize = iconSize,
+        font = font, day = day, mail = hasMail, crafting = hasCrafting,
+        suppressCrafting = suppressNativeCrafting,
+    }
 
     if suppressNativeCrafting then
         self:SuppressNativeCraftingOrderFrame()
@@ -1620,15 +1788,6 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
         local calendarAtlas, calendarFallback = self:GetIndicatorArt("calendar")
         self:ShowIndicatorIcon(calendar, calendarAtlas, calendarFallback)
         self:UpdateCalendarDate(calendar, day)
-        calendar:SetScript("OnEnter", function(owner)
-            QMT:SetIndicatorHovered(owner, true)
-            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(L.CALENDAR_TITLE)
-            GameTooltip:AddLine(L.CALENDAR_OPEN, 1, 1, 1)
-            if QMT:HasCalendarNotification() then GameTooltip:AddLine(L.CALENDAR_PENDING or "Pending invites", 1, 0.82, 0.1, true) end
-            GameTooltip:Show()
-        end)
-        calendar:SetScript("OnClick", function(_, button) if button == "LeftButton" and ToggleCalendar then ToggleCalendar() end end)
         calendar:Show()
     else
         calendar:Hide()
@@ -1638,13 +1797,6 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     if hasMail then
         local mailAtlas, mailFallback = self:GetIndicatorArt("mail")
         self:ShowIndicatorIcon(mail, mailAtlas, mailFallback)
-        mail:SetScript("OnEnter", function(owner)
-            QMT:SetIndicatorHovered(owner, true)
-            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(L.MAIL_PENDING)
-            GameTooltip:Show()
-        end)
-        mail:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeMailFrame(), button) end)
         mail:Show()
     else
         mail:Hide()
@@ -1654,26 +1806,12 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     if hasCrafting then
         local craftingAtlas, craftingFallback = self:GetIndicatorArt("crafting")
         self:ShowIndicatorIcon(crafting, craftingAtlas, craftingFallback)
-        crafting:SetScript("OnEnter", function(owner)
-            QMT:SetIndicatorHovered(owner, true)
-            GameTooltip:SetOwner(owner, "ANCHOR_CURSOR")
-            GameTooltip:AddLine(L.CRAFTING_ORDERS_TITLE)
-            local info = C_CraftingOrders and C_CraftingOrders.GetPersonalOrdersInfo and SafeCall(C_CraftingOrders.GetPersonalOrdersInfo)
-            if type(info) == "table" then
-                for _, order in pairs(info) do
-                    local name = order.professionName or order.name
-                    local count = order.numPersonalOrders or order.numOrders
-                    if name and count then GameTooltip:AddDoubleLine(tostring(name), tostring(count), 1, 1, 1, 1, 1, 1) end
-                end
-            end
-            GameTooltip:Show()
-        end)
-        crafting:SetScript("OnClick", function(_, button) QFXClickNativeFrame(QMT:GetNativeCraftingOrderFrame(), button) end)
         crafting:Show()
     else
         crafting:Hide()
     end
 
+    self.timeStatusIconState = newState
     self:LayoutIndicatorColumn()
     if self.RequestSmartTopRightSnap then self:RequestSmartTopRightSnap() end
 end
@@ -1686,6 +1824,7 @@ function QMT:LayoutUtilityRow()
         if self.utilityTextFrames then
             for _, frame in pairs(self.utilityTextFrames) do if frame and frame.Hide then frame:Hide() end end
         end
+        self.utilityLayoutState = nil
         return
     end
 
@@ -1693,15 +1832,29 @@ function QMT:LayoutUtilityRow()
     local system = self.utilityTextFrames and self.utilityTextFrames.system
     local coords = self.utilityTextFrames and self.utilityTextFrames.coordinates
     local phase = self.utilityTextFrames and self.utilityTextFrames.phase
-    local hasSystem = d.system and system and system.IsShown and system:IsShown()
-    local hasCoords = d.coordinates and coords and coords.IsShown and coords:IsShown()
-    local hasPhase = d.phaseID and phase and phase.IsShown and phase:IsShown()
+    local hasSystem = (d.system and system and system.IsShown and system:IsShown()) and true or false
+    local hasCoords = (d.coordinates and coords and coords.IsShown and coords:IsShown()) and true or false
+    local hasPhase = (d.phaseID and phase and phase.IsShown and phase:IsShown()) and true or false
     local rowHasAny = hasSystem or hasCoords or hasPhase
 
     if not rowHasAny then
         row:Hide()
+        self.utilityLayoutState = nil
         return
     end
+
+    local rowParent = row.GetParent and row:GetParent() or nil
+    local rowLevel = row.GetFrameLevel and row:GetFrameLevel() or nil
+    local state = self.utilityLayoutState
+    if row.IsShown and row:IsShown() and state
+        and state.system == hasSystem and state.coords == hasCoords and state.phase == hasPhase
+        and state.parent == rowParent and state.level == rowLevel then
+        return
+    end
+    local newState = {
+        system = hasSystem, coords = hasCoords, phase = hasPhase,
+        parent = rowParent, level = rowLevel,
+    }
 
     row:SetParent(UIParent or Minimap)
     row:SetFrameStrata("LOW")
@@ -1734,6 +1887,7 @@ function QMT:LayoutUtilityRow()
         phase:ClearAllPoints()
         phase:SetPoint("RIGHT", row, "RIGHT", 0, 0)
     end
+    self.utilityLayoutState = newState
 end
 
 function QMT:UpdateUtilityRow()
@@ -1744,8 +1898,8 @@ function QMT:UpdateUtilityRow()
         if self.utilityTextFrames then for _, frame in pairs(self.utilityTextFrames) do if frame and frame.Hide then frame:Hide() end end end
         if self.indicatorButtons then for _, btn in pairs(self.indicatorButtons) do if btn and btn.Hide then btn:Hide() end end end
         -- Icons were hidden outside UpdateTimeStatusIcons, so its change-detection
-        -- signature must be dropped or they would stay hidden after re-enabling.
-        self.timeStatusIconSignature = nil
+        -- state must be dropped or they would stay hidden after re-enabling.
+        self.timeStatusIconState = nil
         if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then
             SafeCall(self.SuppressNativeCraftingOrderFrame, self)
         else
@@ -1917,6 +2071,8 @@ function QMT:OpenNativeTrackingMenu(owner)
 end
 
 function QMT:GetTrackingIndicator()
+    local existing = self.indicatorButtons and self.indicatorButtons.tracking
+    if existing then return existing end
     local btn = self:CreateIndicatorButton("tracking")
     local atlas, fallback = self:GetIndicatorArt("tracking")
     self:ShowIndicatorIcon(btn, atlas, fallback)
@@ -1933,10 +2089,24 @@ function QMT:GetTrackingIndicator()
     return btn
 end
 
-function QMT:ApplyTrackingButtonPosition()
+function QMT:ApplyTrackingButtonPosition(force)
     local tracking = self:GetNativeTrackingFrame()
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local useCorner = self:ShouldUseNativeTrackingCorner()
+    local level = Minimap and Minimap.GetFrameLevel and Minimap:GetFrameLevel() or 0
+    local state = self.trackingLayoutState
+    if not force and state and state.corner == useCorner and state.flight == flightActive
+        and state.tracking == tracking and state.level == level then
+        -- Flight mode hides every indicator button directly. On landing the
+        -- native-frame state is unchanged, but the tracking icon still needs to
+        -- become visible again (unless the whole utility row is intentionally off).
+        if useCorner and not flightActive and self:ShouldUseUtilityRow() then
+            local indicator = self.indicatorButtons and self.indicatorButtons.tracking
+            if indicator and indicator.IsShown and not indicator:IsShown() then indicator:Show() end
+        end
+        self:LayoutIndicatorColumn()
+        return
+    end
     local indicator = useCorner and self:GetTrackingIndicator() or self.indicatorButtons and self.indicatorButtons.tracking
 
     if not useCorner then
@@ -1944,6 +2114,7 @@ function QMT:ApplyTrackingButtonPosition()
         if tracking and not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, false) end
         self:RestoreNativeTrackingFrame()
         if tracking and flightActive then SafeCall(self.SetFrameFlightSuppressed, self, tracking, true) end
+        self.trackingLayoutState = {corner = useCorner, flight = flightActive, tracking = tracking, level = level}
         self:LayoutIndicatorColumn()
         return
     end
@@ -1967,7 +2138,8 @@ function QMT:ApplyTrackingButtonPosition()
         if tracking.HookScript and not tracking.QFXMinimapToolsTrackingCornerHooked then
             tracking:HookScript("OnShow", function()
                 if QMT:ShouldUseNativeTrackingCorner() then
-                    SafeCall(QMT.ApplyTrackingButtonPosition, QMT)
+                    -- Re-strip after Blizzard/skin addons changed the button art.
+                    SafeCall(QMT.ApplyTrackingButtonPosition, QMT, true)
                 elseif QMT.IsOutdoorFlightCenterActive and QMT:IsOutdoorFlightCenterActive() then
                     SafeCall(QMT.SetFrameFlightSuppressed, QMT, tracking, true)
                 end
@@ -1979,6 +2151,7 @@ function QMT:ApplyTrackingButtonPosition()
     if indicator then
         indicator:SetShown(not flightActive)
     end
+    self.trackingLayoutState = {corner = useCorner, flight = flightActive, tracking = tracking, level = level}
     self:LayoutIndicatorColumn()
 end
 
@@ -1991,18 +2164,24 @@ function QMT:HasNativeDifficultyFrame()
 end
 
 function QMT:GetNativeDifficultyFrames()
-    local frames, seen = {}, {}
-    local function Add(frame)
-        if frame and not seen[frame] then
-            seen[frame] = true
-            frames[#frames + 1] = frame
-        end
+    local cluster = MinimapCluster
+    local s1 = cluster and cluster.InstanceDifficulty
+    local s2 = cluster and cluster.GuildInstanceDifficulty
+    local s3, s4 = _G.MiniMapInstanceDifficulty, _G.GuildInstanceDifficulty
+    local s5 = _G.MiniMapChallengeMode
+    local cache = self.nativeDifficultyFrameCache
+    if cache and cache[2] == s1 and cache[3] == s2 and cache[4] == s3
+        and cache[5] == s4 and cache[6] == s5 then
+        return cache[1]
     end
-    Add(MinimapCluster and MinimapCluster.InstanceDifficulty)
-    Add(MinimapCluster and MinimapCluster.GuildInstanceDifficulty)
-    Add(_G.MiniMapInstanceDifficulty)
-    Add(_G.GuildInstanceDifficulty)
-    Add(_G.MiniMapChallengeMode)
+    local frames, seen = {}, {}
+    QFXAddUniqueFrame(frames, seen, s1)
+    QFXAddUniqueFrame(frames, seen, s2)
+    QFXAddUniqueFrame(frames, seen, s3)
+    QFXAddUniqueFrame(frames, seen, s4)
+    QFXAddUniqueFrame(frames, seen, s5)
+    cache = {frames, s1, s2, s3, s4, s5}
+    self.nativeDifficultyFrameCache = cache
     return frames
 end
 
@@ -2034,11 +2213,18 @@ local function QFXRestoreNativeDifficultyFrame(frame, original)
     -- Blizzard owns current difficulty visibility; do not restore a stale snapshot.
 end
 
-function QMT:ApplyDifficultyFramePosition()
+function QMT:ApplyDifficultyFramePosition(force)
     local frames = self:GetNativeDifficultyFrames()
     if not frames or #frames == 0 then return end
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local showDifficulty = self.db and self.db.display and self.db.display.difficulty == true
+    local native = self:ShouldUseNativeDifficultyFrame()
+    local level = Minimap and Minimap.GetFrameLevel and Minimap:GetFrameLevel() or 0
+    local state = self.difficultyLayoutState
+    if not force and state and state.show == showDifficulty and state.native == native
+        and state.flight == flightActive and state.frames == frames and state.level == level then
+        return
+    end
 
     -- Preserve Blizzard's Show/Hide ownership. When the option is disabled,
     -- restore the native layout first, then suppress only alpha and mouse input.
@@ -2052,19 +2238,21 @@ function QMT:ApplyDifficultyFramePosition()
             if frame.EnableMouse then SafeCall(frame.EnableMouse, frame, false) end
             if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, true) end
             if frame.HookScript and not frame.QFXMinimapToolsDifficultyHooked then
-                frame:HookScript("OnShow", function() SafeCall(QMT.ApplyDifficultyFramePosition, QMT) end)
+                frame:HookScript("OnShow", function() SafeCall(QMT.ApplyDifficultyFramePosition, QMT, true) end)
                 frame.QFXMinimapToolsDifficultyHooked = true
             end
         end
+        self.difficultyLayoutState = {show = false, native = native, flight = flightActive, frames = frames, level = level}
         return
     end
 
-    if not self:ShouldUseNativeDifficultyFrame() then
+    if not native then
         for _, frame in ipairs(frames) do
             if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, false) end
             QFXRestoreNativeDifficultyFrame(frame, self.difficultyFrameOriginal and self.difficultyFrameOriginal[frame])
             if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, true) end
         end
+        self.difficultyLayoutState = {show = true, native = false, flight = flightActive, frames = frames, level = level}
         return
     end
 
@@ -2088,10 +2276,11 @@ function QMT:ApplyDifficultyFramePosition()
         if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, frame, true) end
         -- Do not force Show(); Blizzard decides when a difficulty badge is relevant.
         if frame.HookScript and not frame.QFXMinimapToolsDifficultyHooked then
-            frame:HookScript("OnShow", function() SafeCall(QMT.ApplyDifficultyFramePosition, QMT) end)
+            frame:HookScript("OnShow", function() SafeCall(QMT.ApplyDifficultyFramePosition, QMT, true) end)
             frame.QFXMinimapToolsDifficultyHooked = true
         end
     end
+    self.difficultyLayoutState = {show = true, native = true, flight = flightActive, frames = frames, level = level}
 end
 
 function QMT:CaptureExpansionLandingPageButton(btn)
@@ -2122,14 +2311,22 @@ function QMT:RestoreExpansionLandingPageButton()
     -- Blizzard owns current feature visibility; do not restore a stale snapshot.
 end
 
-function QMT:ApplyExpansionLandingPageButtonPosition()
+function QMT:ApplyExpansionLandingPageButtonPosition(force)
     local btn = _G.ExpansionLandingPageMinimapButton
     if not btn or not Minimap then return end
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
-    if not self:ShouldCleanSquareMinimap() then
+    local clean = self:ShouldCleanSquareMinimap()
+    local level = Minimap.GetFrameLevel and Minimap:GetFrameLevel() or 0
+    local state = self.expansionLandingLayoutState
+    if not force and state and state.clean == clean and state.flight == flightActive
+        and state.button == btn and state.level == level then
+        return
+    end
+    if not clean then
         if not flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, false) end
         self:RestoreExpansionLandingPageButton()
         if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, true) end
+        self.expansionLandingLayoutState = {clean = false, flight = flightActive, button = btn, level = level}
         return
     end
 
@@ -2149,9 +2346,10 @@ function QMT:ApplyExpansionLandingPageButtonPosition()
     if flightActive then SafeCall(self.SetFrameFlightSuppressed, self, btn, true) end
     -- Do not force Show(); Blizzard controls unlock/visibility for the current expansion feature.
     if btn.HookScript and not btn.QFXMinimapToolsLandingHooked then
-        btn:HookScript("OnShow", function() SafeCall(QMT.ApplyExpansionLandingPageButtonPosition, QMT) end)
+        btn:HookScript("OnShow", function() SafeCall(QMT.ApplyExpansionLandingPageButtonPosition, QMT, true) end)
         btn.QFXMinimapToolsLandingHooked = true
     end
+    self.expansionLandingLayoutState = {clean = true, flight = flightActive, button = btn, level = level}
 end
 
 function QMT:ApplyManualMinimapPosition(leavingFlight)
@@ -2332,17 +2530,18 @@ function QMT:ApplySmartTopRightSnap(leavingFlight)
     if not leavingFlight then self:RequestAttachedElementRefresh(true, true) end
 end
 
+local function QFXFlushSmartTopRightSnap()
+    QMT.snapQueued = false
+    QMT:ApplySmartTopRightSnap()
+end
+
 function QMT:RequestSmartTopRightSnap()
     if self.snapQueued then return end
     self.snapQueued = true
-    local function Flush()
-        QMT.snapQueued = false
-        QMT:ApplySmartTopRightSnap()
-    end
     if C_Timer and C_Timer.After then
-        C_Timer.After(0, Flush)
+        C_Timer.After(0, QFXFlushSmartTopRightSnap)
     else
-        Flush()
+        QFXFlushSmartTopRightSnap()
     end
 end
 
@@ -2742,7 +2941,7 @@ function QMT:ApplySquareBorderStyle()
     if not self.squareBorder or not self.db or not self.db.minimap then return end
     local db = self.db.minimap
     if db.borderEnabled == false then
-        self.squareBorderStyleSignature = nil
+        self.squareBorderStyleState = nil
         self.squareBorder:Hide()
         if self.squareBorderLines then
             for _, tex in pairs(self.squareBorderLines) do tex:Hide() end
@@ -2751,17 +2950,17 @@ function QMT:ApplySquareBorderStyle()
     end
     local style = self:GetBorderStyle()
     local edgeSize = Clamp(tonumber(style.edgeSize or db.borderSize) or 3, 1, 12)
-    local signature = table.concat({
-        tostring(style.preset or ""),
-        tostring(style.edgeFile or ""),
-        tostring(edgeSize),
-        string.format("%.4f", style.r or 0),
-        string.format("%.4f", style.g or 0),
-        string.format("%.4f", style.b or 0),
-        string.format("%.4f", style.a or 1),
-    }, "|")
-    if self.squareBorderStyleSignature == signature and self.squareBorderLines then return end
-    self.squareBorderStyleSignature = signature
+    local r, g, b, a = style.r or 0, style.g or 0, style.b or 0, style.a or 1
+    local state = self.squareBorderStyleState
+    if state and self.squareBorderLines and state.preset == style.preset
+        and state.edgeFile == style.edgeFile and state.edgeSize == edgeSize
+        and state.r == r and state.g == g and state.b == b and state.a == a then
+        return
+    end
+    local newState = {
+        preset = style.preset, edgeFile = style.edgeFile, edgeSize = edgeSize,
+        r = r, g = g, b = b, a = a,
+    }
 
     -- Do not rely on Backdrop edge tinting for the visible border. Some edge
     -- textures are dark/pre-colored, so SetBackdropBorderColor can appear to do
@@ -2801,6 +3000,7 @@ function QMT:ApplySquareBorderStyle()
     self.squareBorder:SetShown(db.enabled and db.square and db.borderEnabled ~= false)
     RegisterQFXSkinTarget(self.squareBorder, "MinimapBorder")
     if self.ApplyNativeControlSkin then self:ApplyNativeControlSkin() end
+    self.squareBorderStyleState = newState
 end
 
 function QMT:GetBorderPresetLabel(key)
@@ -2886,11 +3086,13 @@ function QMT:ApplyMinimapSettings()
     self:ApplySquareBorderStyle()
     self.squareBorder:SetShown(db.enabled and db.square and db.borderEnabled ~= false)
     self:ApplyMinimapMoveMode()
-    self:ApplyQueueStatusButtonPosition()
-    self:ApplyMailFramePosition()
-    self:ApplyTrackingButtonPosition()
-    self:ApplyDifficultyFramePosition()
-    self:ApplyExpansionLandingPageButtonPosition()
+    -- Settings/Edit Mode/CVar changes can let Blizzard or Camelot reset native
+    -- anchors. Force one real re-apply instead of trusting the layout cache.
+    self:ApplyQueueStatusButtonPosition(true)
+    self:ApplyMailFramePosition(true)
+    self:ApplyTrackingButtonPosition(true)
+    self:ApplyDifficultyFramePosition(true)
+    self:ApplyExpansionLandingPageButtonPosition(true)
     self:UpdateUtilityRow()
     if self.ApplyNativeControlSkin then self:ApplyNativeControlSkin() end
     if db.enabled then

@@ -225,10 +225,12 @@ function QMT:Initialize()
             SafeCall(QMT.ApplySmartTopRightSnap, QMT)
             SafeCall(QMT.RescanButtons, QMT)
             SafeCall(QMT.ApplySquareBorderStyle, QMT)
-            SafeCall(QMT.ApplyMailFramePosition, QMT)
-            SafeCall(QMT.ApplyTrackingButtonPosition, QMT)
-            SafeCall(QMT.ApplyDifficultyFramePosition, QMT)
-            SafeCall(QMT.ApplyExpansionLandingPageButtonPosition, QMT)
+            -- This late pass exists to catch Blizzard/other addons finishing
+            -- their own minimap layout, so force the cached native-frame work.
+            SafeCall(QMT.ApplyMailFramePosition, QMT, true)
+            SafeCall(QMT.ApplyTrackingButtonPosition, QMT, true)
+            SafeCall(QMT.ApplyDifficultyFramePosition, QMT, true)
+            SafeCall(QMT.ApplyExpansionLandingPageButtonPosition, QMT, true)
             SafeCall(QMT.UpdateUtilityRow, QMT)
         end)
     end
@@ -259,7 +261,13 @@ loader:SetScript("OnEvent", function(_, event, name)
     if event == "ADDON_LOADED" and name == ADDON_NAME then
         QMT:LoadDB()
         QMT:RegisterSettingsCategory()
+    elseif event == "ADDON_LOADED" then
+        -- A load-on-demand addon can introduce new Blizzard UI objects (for
+        -- example the calendar textures). Drop the cached candidate list so the
+        -- next time update rebuilds it.
+        if QMT.InvalidateCalendarSignalCache then QMT:InvalidateCalendarSignalCache() end
     elseif event == "PLAYER_LOGIN" then
+        if QMT.InvalidateClassColorCaches then QMT:InvalidateClassColorCaches() end
         if not QMT.db then QMT:LoadDB() end
         QMT:Initialize()
     end

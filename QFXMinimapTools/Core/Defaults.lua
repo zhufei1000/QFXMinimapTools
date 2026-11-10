@@ -189,7 +189,15 @@ local function NormalizeCurrentDB(db)
 end
 
 function QMT:LoadDB()
-    QFXMinimapToolsDB = MergeDefaults(QFXMinimapToolsDB, DeepCopy(defaults))
+    -- MergeDefaults only reads from its source table, so an existing DB can be
+    -- filled directly from the shared defaults. The old code deep-copied the
+    -- whole default tree first and then discarded almost all of those tables,
+    -- which created a large, useless garbage spike on every login.
+    if type(QFXMinimapToolsDB) ~= "table" then
+        QFXMinimapToolsDB = DeepCopy(defaults)
+    else
+        MergeDefaults(QFXMinimapToolsDB, defaults)
+    end
     self.db = QFXMinimapToolsDB
     NormalizeCurrentDB(self.db)
     self:InvalidateExcludeCache()

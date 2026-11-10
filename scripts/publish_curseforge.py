@@ -10,6 +10,8 @@ import urllib.request
 import uuid
 import zipfile
 
+DEFAULT_GAME_VERSIONS = ('12.1.5', '1.60.1')
+
 def build(args):
     root = Path(args.addon_root).resolve()
     repo = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel']).decode('utf-8').strip()).resolve()
@@ -24,8 +26,14 @@ def build(args):
     project = re.search(r'^## X-Curse-Project-ID:\s*(\d+)', toc, re.M)
     if not project or int(project.group(1)) != args.project_id:
         raise SystemExit('CurseForge project does not match TOC')
-    if not re.search(r'^## Interface:.*\b120105\b', toc, re.M):
-        raise SystemExit('TOC does not declare 12.1.5 support')
+    interfaces = re.search(r'^## Interface:\s*([^\r\n]+)', toc, re.M)
+    declared = set(re.findall(r'\d+', interfaces.group(1))) if interfaces else set()
+    for game_version in args.game_version:
+        if not re.fullmatch(r'\d+\.\d{1,2}\.\d{1,2}', game_version):
+            raise SystemExit(f'Invalid WoW game version: {game_version}')
+        major, minor, patch = map(int, game_version.split('.'))
+        if str(major * 10000 + minor * 100 + patch) not in declared:
+            raise SystemExit(f'TOC does not declare {game_version} support')
     tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=repo).decode('utf-8').split('\0')
     members = {}
     excluded_dirs = {'.github', '.vscode', '.zcode', 'docs', 'tests', 'scripts', '__pycache__', '.release', 'dist'}
@@ -78,11 +86,13 @@ def main():
     parser.add_argument('--addon-root', required=True)
     parser.add_argument('--project-id', required=True, type=int)
     parser.add_argument('--expected-version')
-    parser.add_argument('--game-version', default='12.1.5')
+    parser.add_argument('--game-version', action='append',
+                        help='WoW version to tag, repeatable (default: 12.1.5 and 1.60.1)')
     parser.add_argument('--notes', default='RELEASE_NOTES.md')
     parser.add_argument('--output', default='dist')
     parser.add_argument('--upload', action='store_true')
     args = parser.parse_args()
+    args.game_version = list(dict.fromkeys(args.game_version or DEFAULT_GAME_VERSIONS))
     package, version = build(args)
     if not args.upload:
         return
@@ -90,9 +100,12 @@ def main():
     if not token:
         raise SystemExit('Missing configured CurseForge upload token')
     versions = request_json('game/versions', token)
-    ids = sorted({int(item['id']) for item in versions if item['name'] == args.game_version})
-    if len(ids) != 1:
-        raise SystemExit('Expected one exact CurseForge game version match')
+    ids = []
+    for game_version in args.game_version:
+        matches = {int(item['id']) for item in versions if item['name'] == game_version}
+        if len(matches) != 1:
+            raise SystemExit(f'Expected one exact CurseForge match for {game_version}, found {len(matches)}')
+        ids.append(matches.pop())
     notes = Path(args.notes).read_text(encoding='utf-8-sig')
     if not notes.strip():
         raise SystemExit('Empty release notes')
@@ -108,13 +121,14 @@ def main():
     if not isinstance(file_id, int) or file_id <= 0:
         raise SystemExit('Upload response did not include a valid file ID; do not blindly retry')
     receipt = {'projectId': args.project_id, 'fileId': file_id, 'version': version,
-               'gameVersion': args.game_version, 'gameVersionIds': ids, 'filename': package.name}
+               'gameVersions': args.game_version, 'gameVersionIds': ids, 'filename': package.name}
     (Path(args.output) / 'curseforge-upload.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
     print('CurseForge accepted upload: ' + json.dumps(receipt))
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
         with open(summary, 'a', encoding='utf-8') as file:
-            file.write(f'CurseForge project **{args.project_id}**, file **{file_id}**, version **{version}**, WoW **{args.game_version}**.\n')
+            versions_text = ', '.join(args.game_version)
+            file.write(f'CurseForge project **{args.project_id}**, file **{file_id}**, version **{version}**, WoW **{versions_text}**.\n')
 
 if __name__ == '__main__':
     main()

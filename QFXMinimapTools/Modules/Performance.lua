@@ -133,8 +133,21 @@ local function GetAddonCPUUsageCompat(nameOrIndex)
     return 0
 end
 
+local addonUsageCache, addonUsageCacheAt, addonUsageCacheKey
+local ADDON_USAGE_CACHE_SECONDS = 5
+
 function QMT:GetAddonUsageList(limit, includeCPU)
     limit = tonumber(limit) or 8
+    includeCPU = includeCPU and true or false
+    local now = GetTime and GetTime() or 0
+    local cacheKey = tostring(limit) .. (includeCPU and ":cpu" or ":mem")
+    -- The tooltip can be opened repeatedly by moving the mouse over the FPS
+    -- text. Scanning and sorting every loaded addon each time is expensive, so
+    -- reuse a recent snapshot for a few seconds.
+    if addonUsageCache and addonUsageCacheKey == cacheKey
+        and (now - addonUsageCacheAt) < ADDON_USAGE_CACHE_SECONDS then
+        return addonUsageCache
+    end
     if UpdateAddOnMemoryUsage then SafeCall(UpdateAddOnMemoryUsage) end
     if includeCPU and UpdateAddOnCPUUsage then SafeCall(UpdateAddOnCPUUsage) end
 
@@ -172,6 +185,7 @@ function QMT:GetAddonUsageList(limit, includeCPU)
             end
         end
     end
+    addonUsageCache, addonUsageCacheAt, addonUsageCacheKey = shown, now, cacheKey
     return shown
 end
 

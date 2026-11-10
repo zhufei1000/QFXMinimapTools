@@ -331,43 +331,103 @@ function QMT:RefreshFlightEventRegistration()
     end
 end
 
+local function CanWatchFlight(self)
+    local db = self.db and self.db.minimap
+    if not db or not db.enabled or db.flightCenter ~= true then return false end
+    -- Keep polling while a probe is active so takeoff/landing can still be
+    -- detected after a mount or glide transition.
+    if self.flightModeActive or Now() < (self.flightProbeUntil or 0) then return true end
+    if not ((IsMounted and IsMounted()) or self:IsPlayerAirborne()) then return false end
+    -- A non-gatherer can never trigger the gathering-only variant. Do not keep
+    -- a timer alive for the entire time the character is mounted.
+    if db.flightCenterOnlyGathering == true and self.HasGatheringProfession and not self:HasGatheringProfession() then
+        return false
+    end
+    if UnitInVehicle and UnitInVehicle("player") then return false end
+    if UnitOnTaxi and UnitOnTaxi("player") then return false end
+    local inInstance, instanceType = false, "none"
+    if IsInInstance then inInstance, instanceType = IsInInstance() end
+    if inInstance or (instanceType and instanceType ~= "none") then return false end
+    if IsResting and IsResting() then return false end
+    return true
+end
+
+local function CancelFlightWatcher(self)
+    if self.flightWatcherTicker then
+        SafeCall(self.flightWatcherTicker.Cancel, self.flightWatcherTicker)
+        self.flightWatcherTicker = nil
+    end
+    if self.flightWatcher and self.flightWatcherActive then
+        self.flightWatcher:SetScript("OnUpdate", nil)
+    end
+    self.flightWatcherActive = false
+    self.flightWatcherInterval = nil
+    if self.flightWatcher then self.flightWatcher.elapsed = 0 end
+end
+
+-- Fallback for clients without C_Timer.NewTicker. On supported clients the
+-- watcher uses a ticker below, so there is no per-frame Lua callback at all.
+local function QFXFlightWatcherOnUpdate(frame, elapsed)
+    frame.elapsed = (frame.elapsed or 0) + (elapsed or 0)
+    local interval = QMT.flightWatcherInterval or 0.50
+    if frame.elapsed < interval then return end
+    frame.elapsed = 0
+    SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
+    local now = Now()
+    local probing = now < (QMT.flightProbeUntil or 0)
+    if not CanWatchFlight(QMT) then
+        QMT:RefreshOutdoorFlightWatcher()
+        return
+    end
+    local desired = QMT.flightModeActive and 0.20 or (probing and 0.10 or 0.50)
+    if QMT.flightWatcherInterval ~= desired then QMT:RefreshOutdoorFlightWatcher() end
+end
+
+local function QFXFlightWatcherTick()
+    SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
+    local now = Now()
+    local probing = now < (QMT.flightProbeUntil or 0)
+    if not CanWatchFlight(QMT) then
+        QMT:RefreshOutdoorFlightWatcher()
+        return
+    end
+    local desired = QMT.flightModeActive and 0.20 or (probing and 0.10 or 0.50)
+    if QMT.flightWatcherInterval ~= desired then QMT:RefreshOutdoorFlightWatcher() end
+end
+
 function QMT:RefreshOutdoorFlightWatcher()
     if QMT.IsForever and QMT:IsForever() then
-        if self.flightWatcher then
-            self.flightWatcher:SetScript("OnUpdate", nil)
-            self.flightWatcher.elapsed = 0
-        end
+        CancelFlightWatcher(self)
         return
     end
     if self.RefreshFlightEventRegistration then self:RefreshFlightEventRegistration() end
+    if not CanWatchFlight(self) then
+        CancelFlightWatcher(self)
+        return
+    end
+
+    local inProbeWindow = Now() < (self.flightProbeUntil or 0)
+    local desired = self.flightModeActive and 0.20 or (inProbeWindow and 0.10 or 0.50)
+    if C_Timer and C_Timer.NewTicker then
+        if self.flightWatcherTicker and self.flightWatcherInterval == desired then return end
+        if self.flightWatcherTicker then
+            SafeCall(self.flightWatcherTicker.Cancel, self.flightWatcherTicker)
+            self.flightWatcherTicker = nil
+        end
+        self.flightWatcherInterval = desired
+        self.flightWatcherTicker = C_Timer.NewTicker(desired, QFXFlightWatcherTick)
+        return
+    end
+
+    -- Legacy fallback path (C_Timer tickers are unavailable).
     if not self.flightWatcher then
         self.flightWatcher = CreateFrame("Frame")
         self.flightWatcher.elapsed = 0
     end
-    local db = self.db and self.db.minimap
-    local inProbeWindow = Now() < (self.flightProbeUntil or 0)
-    local shouldWatch = db and db.enabled and db.flightCenter == true and (
-        self.flightModeActive
-        or inProbeWindow
-        or (IsMounted and IsMounted())
-        or self:IsPlayerAirborne()
-    )
-    if shouldWatch then
-        self.flightWatcher:SetScript("OnUpdate", function(frame, elapsed)
-            frame.elapsed = (frame.elapsed or 0) + (elapsed or 0)
-            local probing = Now() < (QMT.flightProbeUntil or 0)
-            local interval = QMT.flightModeActive and 0.20 or (probing and 0.10 or 0.50)
-            if frame.elapsed < interval then return end
-            frame.elapsed = 0
-            SafeCall(QMT.UpdateOutdoorFlightCenterState, QMT, false)
-            local stillWatch = QMT.flightModeActive
-                or Now() < (QMT.flightProbeUntil or 0)
-                or (IsMounted and IsMounted())
-                or QMT:IsPlayerAirborne()
-            if not stillWatch then QMT:RefreshOutdoorFlightWatcher() end
-        end)
-    else
-        self.flightWatcher:SetScript("OnUpdate", nil)
+    self.flightWatcherInterval = desired
+    if not self.flightWatcherActive then
+        self.flightWatcherActive = true
         self.flightWatcher.elapsed = 0
+        self.flightWatcher:SetScript("OnUpdate", QFXFlightWatcherOnUpdate)
     end
 end

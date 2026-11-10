@@ -43,17 +43,36 @@ local function HexFromRGB(r, g, b)
     return string.format("ff%02x%02x%02x", r, g, b)
 end
 
+-- Class colours cannot change during a session, so resolve the hex string once
+-- instead of calling UnitClass()/string.format() for every stat refresh.
+local classAccentHex
 local function AccentHex()
-    local classFile = select(2, UnitClass("player"))
+    if classAccentHex then return classAccentHex end
+    local classFile = UnitClass and select(2, UnitClass("player"))
     local c = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-    if c then return HexFromRGB(c.r, c.g, c.b) end
-    local a = QMT.db.display.accent
-    return HexFromRGB(a[1], a[2], a[3])
+    if c then
+        classAccentHex = HexFromRGB(c.r, c.g, c.b)
+        return classAccentHex
+    end
+    -- Do not cache the fallback: the player unit may not exist yet during the
+    -- very first loading screen frame, and a later call should pick up the class.
+    local a = QMT.db and QMT.db.display and QMT.db.display.accent
+    if a then return HexFromRGB(a[1], a[2], a[3]) end
+    return "ff8080ff"
 end
 
+local displayAccentR, displayAccentG, displayAccentB, displayAccentValue
 local function DisplayAccentHex()
-    local a = QMT.db and QMT.db.display and QMT.db.display.accent or {0.5019608, 0.5019608, 1.0}
-    return HexFromRGB(a[1] or 0.5019608, a[2] or 0.5019608, a[3] or 1.0)
+    local a = QMT.db and QMT.db.display and QMT.db.display.accent
+    local r = a and a[1] or 0.5019608
+    local g = a and a[2] or 0.5019608
+    local b = a and a[3] or 1.0
+    if displayAccentValue and displayAccentR == r and displayAccentG == g and displayAccentB == b then
+        return displayAccentValue
+    end
+    displayAccentR, displayAccentG, displayAccentB = r, g, b
+    displayAccentValue = HexFromRGB(r, g, b)
+    return displayAccentValue
 end
 
 local function ColorText(text, hex)
@@ -121,6 +140,12 @@ local function IsDescendant(parent, child)
         p = p.GetParent and p:GetParent()
     end
     return false
+end
+
+function QMT:InvalidateClassColorCaches()
+    classAccentHex = nil
+    displayAccentValue = nil
+    if QMT.ClearIndicatorClassColorCache then QMT:ClearIndicatorClassColorCache() end
 end
 
 QMT.DeepCopy = DeepCopy

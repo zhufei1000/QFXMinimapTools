@@ -245,6 +245,14 @@ function QMT:HideUnusedButtonCells(active)
     end
 end
 
+local function QFXFlushBagLayout()
+    QMT.bagLayoutQueued = false
+    if QMT.db and QMT.db.bag and QMT.db.bag.enabled and QMT.bagFrame
+        and (QMT.bagFrame:IsShown() or QMT.bagPinFrame) then
+        SafeCall(QMT.LayoutBag, QMT)
+    end
+end
+
 function QMT:RequestBagLayout()
     if InCombatLockdown and InCombatLockdown() then
         self.pendingBagLayout = true
@@ -252,14 +260,7 @@ function QMT:RequestBagLayout()
     end
     if self.bagLayoutQueued then return end
     self.bagLayoutQueued = true
-    local function Flush()
-        QMT.bagLayoutQueued = false
-        if QMT.db and QMT.db.bag and QMT.db.bag.enabled and QMT.bagFrame
-            and (QMT.bagFrame:IsShown() or QMT.bagPinFrame) then
-            SafeCall(QMT.LayoutBag, QMT)
-        end
-    end
-    if C_Timer and C_Timer.After then C_Timer.After(0, Flush) else Flush() end
+    if C_Timer and C_Timer.After then C_Timer.After(0, QFXFlushBagLayout) else QFXFlushBagLayout() end
 end
 
 function QMT:CreateBagFrames()
@@ -493,6 +494,9 @@ function QMT:CollectButton(button)
     local exclude = self:GetExcludeTable()
     if name and exclude[name] then return false end
     self:RememberButtonName(name)
+    -- Frame names are stable after creation. Cache it so repeated sorting and
+    -- layout passes do not call GetName() through the C API for every compare.
+    button.__qfxSortName = name
     local hitInfo = SaveButtonHitInfo(button)
     self.originalButtons[button] = {
         parent = button:GetParent(),
@@ -584,7 +588,9 @@ function QMT:RescanButtons(force)
     self:ScanMinimapChildren()
     -- 1.0.4: no broad EnumerateFrames scan by default. The bag now only collects buttons
     -- that are visibly attached to / around the minimap, avoiding unrelated UI frames.
-    table.sort(self.collectedButtons, function(a, b) return (FrameName(a) or "") < (FrameName(b) or "") end)
+    table.sort(self.collectedButtons, function(a, b)
+        return (a.__qfxSortName or FrameName(a) or "") < (b.__qfxSortName or FrameName(b) or "")
+    end)
     self.hasScannedButtons = true
     self:LayoutBag()
 end
@@ -658,11 +664,21 @@ function QMT:LayoutBag()
     end
     if not self.bagFrame or not self.bagButton or not self.db.bag.enabled then return end
     local db = self.db.bag
-    local buttons = {}
-    local pinned = {}
+    -- Reuse the layout scratch lists. This path runs whenever a collected
+    -- button shows/hides or the bag is opened, so fresh tables here were pure
+    -- garbage once the bag had many icons.
+    local buttons = self.bagLayoutButtons or {}
+    for i = #buttons, 1, -1 do buttons[i] = nil end
+    self.bagLayoutButtons = buttons
+    local pinned = self.bagLayoutPinned or {}
+    for i = #pinned, 1, -1 do pinned[i] = nil end
+    self.bagLayoutPinned = pinned
+    local activeCells = self.bagActiveCells or {}
+    for button in pairs(activeCells) do activeCells[button] = nil end
+    self.bagActiveCells = activeCells
     local exclude = self:GetExcludeTable()
     for _, button in ipairs(self.collectedButtons or {}) do
-        local name = FrameName(button)
+        local name = button.__qfxSortName or FrameName(button)
         if name and not exclude[name] then
             local isPinned = self:IsButtonPinned(name)
             local parent = self.bagFrame
@@ -691,7 +707,6 @@ function QMT:LayoutBag()
 
     local scale = db.buttonScale or 1
     local cell = math.floor(30 * scale + 0.5)
-    local activeCells = {}
     local bagGap = 6
     local hadPins = self.bagPinExtent ~= nil
     self.bagPinTails, self.bagPinExtent = nil, nil
@@ -813,12 +828,14 @@ function QMT:CloseBag()
     self:StopBagAutoCloseWatcher()
 end
 
+local function QFXBagAutoCloseOnUpdate(_, elapsed)
+    QMT:UpdateBagAutoClose(elapsed)
+end
+
 function QMT:StartBagAutoCloseWatcher()
     if not self.bagFrame then return end
     self.bagAutoCloseElapsed = 0
-    self.bagFrame:SetScript("OnUpdate", function(_, elapsed)
-        QMT:UpdateBagAutoClose(elapsed)
-    end)
+    self.bagFrame:SetScript("OnUpdate", QFXBagAutoCloseOnUpdate)
 end
 
 function QMT:StopBagAutoCloseWatcher()
@@ -967,7 +984,7 @@ function QMT:UpdatePinnableButtonItems(items)
     end
     for name in pairs(pins) do Add(name) end
     for _, button in ipairs(self.collectedButtons or {}) do
-        if button:IsShown() then Add(FrameName(button)) end
+        if button:IsShown() then Add(button.__qfxSortName or FrameName(button)) end
     end
     table.sort(items, function(a, b)
         if pins[a.key] ~= pins[b.key] then return pins[a.key] == true end
