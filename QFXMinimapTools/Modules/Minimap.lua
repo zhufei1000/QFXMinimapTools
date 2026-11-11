@@ -1302,13 +1302,14 @@ function QMT:LayoutIndicatorColumn(force)
                     pinTail = nil
                 else
                     local x, y = baseX, 0
+                    local gap = previous == q and iconSize or spacing
                     if direction == "UP" or direction == "DOWN" then
                         if previousHeight > 0 then
-                            local offset = (previousHeight + btn:GetHeight()) * 0.5 + spacing
+                            local offset = (previousHeight + btn:GetHeight()) * 0.5 + gap
                             y = (direction == "UP" and 1 or -1) * offset
                         end
                     elseif previousWidth > 0 then
-                        local offset = (previousWidth + btn:GetWidth()) * 0.5 + spacing
+                        local offset = (previousWidth + btn:GetWidth()) * 0.5 + gap
                         x = (direction == "RIGHT" and 1 or -1) * offset
                     end
                     Place(btn, previous, relativePoint, x, y)

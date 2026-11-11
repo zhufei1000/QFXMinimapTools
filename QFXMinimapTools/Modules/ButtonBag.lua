@@ -731,8 +731,9 @@ function QMT:LayoutBag()
             end
             cellFrame:SetSize(width, height)
             maxWidth = math.max(maxWidth, width)
-            extent = extent + height + PIN_GAP
-            cellFrame:SetPoint(near, previous, far, 0, sign * PIN_GAP)
+            local gap = previous == q and height or PIN_GAP
+            extent = extent + height + gap
+            cellFrame:SetPoint(near, previous, far, 0, sign * gap)
             cellFrame:Show()
             activeCells[button] = true
             previous = cellFrame
