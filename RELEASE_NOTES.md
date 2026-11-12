@@ -1,9 +1,18 @@
-# QFXMinimapTools 1.0.75
+# QFXMinimapTools 1.0.76
 
-- Leave one icon's worth of space between Q and the first map indicator. Subsequent indicators use the configured spacing.
-- Leave one button's height between Q and the first pinned addon button. Subsequent pinned buttons use the default spacing. When both groups share a side, the map indicators follow the pinned buttons.
+- Fix duplicate mail and crafting order icons when the clock text is hidden.
+- Fix duplicate calendar buttons on the round minimap.
+- Keep the Retail crafting order window visible when opened.
 - Compatible with Retail 12.1.5 and WoW Forever 1.60.1.
 
-简体中文：地图控件吸附到 Q 时，首个图标与 Q 之间留出一个图标大小，后续图标按设置的间距排列。常驻插件按钮与 Q 之间留出一个按钮高度，后续按钮沿用默认间距。两组位于同一侧时，地图控件接在常驻按钮之后。
+简体中文
 
-繁體中文：地圖元件錨定到 Q 時，第一個圖示與 Q 之間留出一個圖示的距離，後續圖示依設定的間距排列。常駐插件按鈕與 Q 之間留出一個按鈕的高度，後續按鈕沿用預設間距。兩組位於同一側時，地圖元件接在常駐按鈕之後。
+- 修复关闭时间文字后，原生邮件和制造订单图标与 QFX 图标同时显示的问题。
+- 修复圆形小地图重复显示日历的问题。
+- 修复正式服制造订单窗口可能被误隐藏的问题。
+
+繁體中文
+
+- 修正關閉時間文字後，原生郵件和製造訂單圖示與 QFX 圖示同時顯示的問題。
+- 修正圓形小地圖重複顯示行事曆的問題。
+- 修正正式服製造訂單視窗可能被誤隱藏的問題。

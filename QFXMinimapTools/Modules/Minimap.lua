@@ -240,6 +240,10 @@ function QMT:ShouldCleanSquareMinimap()
     return self.db and self.db.minimap and self.db.minimap.enabled and self.db.minimap.square
 end
 
+local function QFXShouldHideNativeCalendar(frame)
+    return frame == _G.GameTimeFrame and QMT:ShouldUseCustomCalendarIndicator()
+end
+
 function QMT:CaptureNativeMinimapControls()
     if self.nativeMinimapControlsCaptured then return end
     self.nativeMinimapControlsCaptured = true
@@ -256,7 +260,7 @@ function QMT:CaptureNativeMinimapControls()
             obj:HookScript("OnShow", function(frame)
                 if QMT.IsOutdoorFlightCenterActive and QMT:IsOutdoorFlightCenterActive() then
                     SafeCall(QMT.SetFrameFlightSuppressed, QMT, frame, true)
-                elseif QMT:ShouldCleanSquareMinimap() and frame.Hide then
+                elseif (QMT:ShouldCleanSquareMinimap() or QFXShouldHideNativeCalendar(frame)) and frame.Hide then
                     frame:Hide()
                 end
             end)
@@ -297,7 +301,7 @@ function QMT:SetNativeMinimapControlsHidden(hidden)
     self:CaptureNativeMinimapControls()
     for obj, info in pairs(self.nativeMinimapControls or {}) do
         if obj then
-            if hidden then
+            if hidden or QFXShouldHideNativeCalendar(obj) then
                 if obj.SetAlpha then obj:SetAlpha(0) end
                 if obj.Hide then obj:Hide() end
             else
@@ -562,13 +566,7 @@ local function QFXHasNewMail()
 end
 
 function QMT:ShouldUseCustomMailIndicator()
-    local d = self.db and self.db.display or {}
-    return self.db
-        and self.db.minimap
-        and self.db.minimap.enabled
-        and d.time
-        and Minimap
-        and not (self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive())
+    return self:ShouldUseUtilityRow()
 end
 
 function QMT:CaptureNativeMailFrame(mail)
@@ -1394,11 +1392,10 @@ function QMT:GetNativeCraftingOrderFrames()
     local s1 = indicator and indicator.CraftingOrderFrame
     local s2 = indicator and indicator.CraftingOrdersFrame
     local s3 = cluster and cluster.CraftingOrderFrame
-    local s4, s5 = _G.CraftingOrderFrame, _G.ProfessionsCustomerOrdersFrame
-    local s6 = _G.ProfessionsCustomerOrders_MinimapButton
+    local s4, s5 = _G.CraftingOrderFrame, _G.ProfessionsCustomerOrders_MinimapButton
     local cache = self.nativeCraftingFrameCache
     if cache and cache[2] == s1 and cache[3] == s2 and cache[4] == s3
-        and cache[5] == s4 and cache[6] == s5 and cache[7] == s6 then
+        and cache[5] == s4 and cache[6] == s5 then
         return cache[1]
     end
     local frames, seen = {}, {}
@@ -1407,8 +1404,7 @@ function QMT:GetNativeCraftingOrderFrames()
     QFXAddUniqueFrame(frames, seen, s3)
     QFXAddUniqueFrame(frames, seen, s4)
     QFXAddUniqueFrame(frames, seen, s5)
-    QFXAddUniqueFrame(frames, seen, s6)
-    cache = {frames, s1, s2, s3, s4, s5, s6}
+    cache = {frames, s1, s2, s3, s4, s5}
     self.nativeCraftingFrameCache = cache
     return frames
 end
@@ -1420,10 +1416,7 @@ end
 
 function QMT:ShouldSuppressNativeCraftingOrderFrame()
     if self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive() then return true end
-    local d = self.db and self.db.display or {}
     return self:ShouldUseUtilityRow()
-        and d.time
-        and Minimap
 end
 
 function QMT:CaptureNativeCraftingOrderFrame(frame)
@@ -1439,12 +1432,10 @@ end
 function QMT:SuppressNativeCraftingOrderFrame()
     for _, frame in ipairs(self:GetNativeCraftingOrderFrames()) do
         self:CaptureNativeCraftingOrderFrame(frame)
-        if frame.IsShown and frame:IsShown() then self.craftingOrderNativeWantsShow = true end
         if frame.SetAlpha then SafeCall(frame.SetAlpha, frame, 0) end
         if frame.EnableMouse then SafeCall(frame.EnableMouse, frame, false) end
         if frame.HookScript and not frame.QFXMinimapToolsCraftingHooked then
             frame:HookScript("OnShow", function(f)
-                QMT.craftingOrderNativeWantsShow = true
                 if QMT:ShouldSuppressNativeCraftingOrderFrame() then
                     if f.SetAlpha then SafeCall(f.SetAlpha, f, 0) end
                     if f.EnableMouse then SafeCall(f.EnableMouse, f, false) end
@@ -1452,14 +1443,6 @@ function QMT:SuppressNativeCraftingOrderFrame()
                 SafeCall(QMT.UpdateTimeStatusIcons, QMT)
             end)
             frame:HookScript("OnHide", function()
-                local anyShown = false
-                for _, candidate in ipairs(QMT:GetNativeCraftingOrderFrames()) do
-                    if candidate.IsShown and candidate:IsShown() then
-                        anyShown = true
-                        break
-                    end
-                end
-                QMT.craftingOrderNativeWantsShow = anyShown
                 SafeCall(QMT.UpdateTimeStatusIcons, QMT)
             end)
             frame.QFXMinimapToolsCraftingHooked = true
@@ -1474,20 +1457,13 @@ function QMT:RestoreNativeCraftingOrderFrame()
             if frame.EnableMouse and original.mouseEnabled ~= nil then SafeCall(frame.EnableMouse, frame, original.mouseEnabled) end
         end
     end
-    self.craftingOrderNativeWantsShow = false
-    for _, current in ipairs(self:GetNativeCraftingOrderFrames()) do
-        if current.IsShown and current:IsShown() then
-            self.craftingOrderNativeWantsShow = true
-            break
-        end
-    end
 end
 
-function QMT:HasCraftingOrderIndicator()
-    for _, frame in ipairs(self:GetNativeCraftingOrderFrames()) do
+function QMT:HasCraftingOrderIndicator(frames)
+    for _, frame in ipairs(frames or self:GetNativeCraftingOrderFrames()) do
         if frame.IsShown and frame:IsShown() then return true end
     end
-    return self.craftingOrderNativeWantsShow and true or false
+    return false
 end
 
 
@@ -1748,18 +1724,22 @@ local function IsCalendarDisabledByRuleset()
     return calendarRuleDisabled
 end
 
+function QMT:ShouldUseCustomCalendarIndicator()
+    return self:ShouldUseUtilityRow() and not IsCalendarDisabledByRuleset()
+end
+
 function QMT:UpdateTimeStatusIcons(skipLayout)
     local d = self.db and self.db.display or {}
-    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     -- These indicators are independent of the time text. Turning off "Show
     -- time" must not hide the calendar, mail, crafting or tracking buttons.
-    local indicatorsUsable = self:ShouldUseUtilityRow() and Minimap and not flightActive
+    local indicatorsUsable = self:ShouldUseUtilityRow()
     -- Some Forever rulesets (Hardcore, self-found, etc.) disable the in-game
     -- calendar. Do not offer a dead calendar button in that case.
-    local calendarUsable = indicatorsUsable and not IsCalendarDisabledByRuleset()
+    local calendarUsable = self:ShouldUseCustomCalendarIndicator()
     local day = tonumber(date and date("%d")) or 1
     local hasMail = indicatorsUsable and QFXHasNewMail() or false
-    local hasCrafting = indicatorsUsable and self:HasCraftingOrderIndicator() or false
+    local craftingFrames = self:GetNativeCraftingOrderFrames()
+    local hasCrafting = indicatorsUsable and self:HasCraftingOrderIndicator(craftingFrames) or false
     local suppressNativeCrafting = self:ShouldSuppressNativeCraftingOrderFrame() and true or false
 
     local iconSize = self:GetUtilityIconSize()
@@ -1768,14 +1748,14 @@ function QMT:UpdateTimeStatusIcons(skipLayout)
     if state and state.usable == indicatorsUsable and state.calendar == calendarUsable
         and state.iconSize == iconSize and state.font == font and state.day == day
         and state.mail == hasMail and state.crafting == hasCrafting
-        and state.suppressCrafting == suppressNativeCrafting then
+        and state.suppressCrafting == suppressNativeCrafting and state.craftingFrames == craftingFrames then
         self:LayoutIndicatorColumn()
         return
     end
     local newState = {
         usable = indicatorsUsable, calendar = calendarUsable, iconSize = iconSize,
         font = font, day = day, mail = hasMail, crafting = hasCrafting,
-        suppressCrafting = suppressNativeCrafting,
+        suppressCrafting = suppressNativeCrafting, craftingFrames = craftingFrames,
     }
 
     if suppressNativeCrafting then

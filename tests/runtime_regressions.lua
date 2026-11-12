@@ -46,6 +46,69 @@ GetProfessionInfo = function(index)
 end
 assert(Q:RefreshGatheringProfessionCache(), "check the second primary slot even when the first is empty")
 
+local function mockIndicator(shown)
+    local frame = { shown = shown, alpha = 1, mouse = true, hooks = {} }
+    function frame:IsShown() return self.shown end
+    function frame:GetAlpha() return self.alpha end
+    function frame:SetAlpha(alpha) self.alpha = alpha end
+    function frame:IsMouseEnabled() return self.mouse end
+    function frame:EnableMouse(enabled) self.mouse = enabled end
+    function frame:HookScript(event, callback) self.hooks[event] = callback end
+    function frame:SetShown(visible)
+        if self.shown == visible then return end
+        self.shown = visible
+        local callback = self.hooks[visible and "OnShow" or "OnHide"]
+        if callback then callback(self) end
+    end
+    function frame:Show() self:SetShown(true) end
+    function frame:Hide() self:SetShown(false) end
+    return frame
+end
+
+local nativeMail, nativeCrafting = mockIndicator(true), mockIndicator(true)
+MinimapCluster = { IndicatorFrame = { MailFrame = nativeMail, CraftingOrderFrame = nativeCrafting } }
+Minimap.GetRegions = noop
+GameTimeFrame = mockIndicator(true)
+ProfessionsCustomerOrdersFrame = mockIndicator(true)
+local icons = { calendar = mockIndicator(false), mail = mockIndicator(false), crafting = mockIndicator(false) }
+Q.CreateIndicatorButton = function(_, key) return icons[key] end
+Q.ShowIndicatorIcon, Q.UpdateCalendarDate, Q.LayoutIndicatorColumn = noop, noop, noop
+Q.RequestSmartTopRightSnap = noop
+Q.db.display.time = false
+Q.db.minimap.square = false
+local pendingMail = true
+HasNewMail = function() return pendingMail end
+Q:ApplyMailFramePosition()
+Q:SetNativeMinimapControlsHidden(false)
+assert(icons.mail:IsShown() and nativeMail.alpha == 0 and not nativeMail.mouse,
+    "replace native mail even with the clock hidden")
+assert(icons.crafting:IsShown() and nativeCrafting.alpha == 0 and not nativeCrafting.mouse,
+    "replace native crafting orders even with the clock hidden")
+assert(icons.calendar:IsShown() and not GameTimeFrame:IsShown(), "replace native calendar in round mode")
+GameTimeFrame:Show()
+assert(not GameTimeFrame:IsShown(), "native calendar stays hidden when Blizzard shows it again")
+assert(ProfessionsCustomerOrdersFrame.alpha == 1 and ProfessionsCustomerOrdersFrame.mouse,
+    "the crafting order window is not a minimap indicator")
+
+ProfessionsCustomerOrders_MinimapButton = mockIndicator(false)
+Q:UpdateTimeStatusIcons()
+assert(ProfessionsCustomerOrders_MinimapButton.alpha == 0,
+    "new native indicator must be managed even when icon visibility is unchanged")
+nativeCrafting:Hide()
+assert(not icons.crafting:IsShown(), "an open order window must not show a crafting notification")
+pendingMail = false
+Q:ApplyMailFramePosition()
+assert(not icons.mail:IsShown(), "a mail event must clear the replacement icon")
+
+Q.db.minimap.enabled = false
+Q:ApplyMailFramePosition()
+Q:SetNativeMinimapControlsHidden(false)
+assert(nativeMail.alpha == 1 and nativeMail.mouse and nativeCrafting.alpha == 1 and nativeCrafting.mouse,
+    "disabling the enhancement must restore the native indicators")
+assert(GameTimeFrame:IsShown() and not icons.calendar:IsShown(), "restore the native calendar on disable")
+GameTimeFrame, ProfessionsCustomerOrdersFrame, ProfessionsCustomerOrders_MinimapButton, HasNewMail = nil, nil, nil, nil
+Q.db.minimap.enabled, Q.db.minimap.square = true, true
+
 local firstTick, everyMinute, iconUpdates = nil, nil, 0
 local timer = { Cancel = noop }
 C_Timer = {
@@ -126,4 +189,4 @@ local rescanned
 Q.RescanButtons = function() rescanned = true end
 Q:ResetDefaults()
 assert(rescanned and not Q:GetExcludeTable().PreviouslyExcludedMinimapButton)
-print("PASS: scaled button collection, secret geometry, pinned hover, profession slots, calendar, shape, flight recovery and reset")
+print("PASS: button collection, pinned hover, profession slots, native indicators, calendar, shape, flight recovery and reset")
