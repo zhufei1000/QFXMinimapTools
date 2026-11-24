@@ -905,6 +905,7 @@ function QMT:SetIndicatorColor(r, g, b)
     if not self.db or not self.db.minimap then return end
     self.db.minimap.indicatorColor = {Clamp(tonumber(r) or 1, 0, 1), Clamp(tonumber(g) or 1, 0, 1), Clamp(tonumber(b) or 1, 0, 1)}
     for _, btn in pairs(self.indicatorButtons or {}) do self:ApplyIndicatorColor(btn) end
+    self:RefreshNativeTrackingArtwork()
 end
 
 function QMT:RefreshIndicatorAppearance()
@@ -916,6 +917,7 @@ function QMT:RefreshIndicatorAppearance()
         self:ApplyIndicatorSize(btn)
         self:ApplyIndicatorColor(btn)
     end
+    self:RefreshNativeTrackingArtwork()
     self:LayoutIndicatorColumn()
 end
 
@@ -2070,7 +2072,93 @@ function QMT:GetTrackingIndicator()
     return btn
 end
 
+function QMT:GetForeverTrackingIndicatorSlot()
+    local indicator = self:CreateIndicatorButton("tracking")
+    -- The native button receives clicks. This frame only reserves its QFX layout slot.
+    indicator:EnableMouse(false)
+    return indicator
+end
+
+function QMT:RefreshNativeTrackingArtwork()
+    if not (self.IsForever and self:IsForever()) then return end
+    local tracking = self:GetNativeTrackingFrame()
+    local button = tracking and tracking.Button
+    if not button or not tracking.Background or not button.StateTexture then return end
+
+    local artwork = self.nativeTrackingArtwork
+    if self:ShouldCleanSquareMinimap() then
+        if not artwork then
+            local icon = button:CreateTexture(nil, "OVERLAY")
+            icon:SetPoint("CENTER", button, "CENTER")
+            icon:SetTexture(QFX_INDICATOR_SPEC.tracking.fallback)
+            artwork = { Icon = icon, UsesWeightStrip = true }
+            self.nativeTrackingArtwork = artwork
+        end
+        if not artwork.active then
+            artwork.backgroundAlpha = tracking.Background:GetAlpha()
+            artwork.stateAlpha = button.StateTexture:GetAlpha()
+            tracking.Background:SetAlpha(0)
+            button.StateTexture:SetAlpha(0)
+            artwork.Icon:Show()
+            artwork.active = true
+        end
+        self:ApplyIndicatorSize(artwork)
+        self:ApplyIndicatorColor(artwork)
+    elseif artwork and artwork.active then
+        tracking.Background:SetAlpha(artwork.backgroundAlpha)
+        button.StateTexture:SetAlpha(artwork.stateAlpha)
+        artwork.Icon:Hide()
+        artwork.active = false
+    end
+end
+
+function QMT:ApplyForeverTrackingButtonPosition(force)
+    local tracking = self:GetNativeTrackingFrame()
+    self:RefreshNativeTrackingArtwork()
+    local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
+    local useSlot = tracking and self.nativeTrackingArtwork and self.nativeTrackingArtwork.active
+        and self:ShouldUseUtilityRow()
+    local indicator = self.indicatorButtons and self.indicatorButtons.tracking
+    if useSlot and not indicator then
+        indicator = self:GetForeverTrackingIndicatorSlot()
+    end
+
+    if tracking then
+        SafeCall(self.SetFrameFlightSuppressed, self, tracking, flightActive and true or false)
+        local original = self.trackingSlotOriginal
+        if useSlot then
+            if not original then
+                self.trackingSlotOriginal = {
+                    points = QFXCapturePoints(tracking),
+                    strata = tracking:GetFrameStrata(),
+                    level = tracking:GetFrameLevel(),
+                }
+            end
+            if force or not original then
+                tracking:ClearAllPoints()
+                tracking:SetPoint("CENTER", indicator, "CENTER")
+                tracking:SetFrameStrata("HIGH")
+            end
+        elseif original then
+            QFXRestorePoints(tracking, original.points)
+            tracking:SetFrameStrata(original.strata)
+            tracking:SetFrameLevel(original.level)
+            self.trackingSlotOriginal = nil
+        end
+    end
+
+    if indicator then indicator:SetShown(useSlot and tracking:IsShown() or false) end
+    self:LayoutIndicatorColumn(force)
+    if useSlot then
+        local level = indicator:GetFrameLevel() + 1
+        if tracking:GetFrameLevel() ~= level then tracking:SetFrameLevel(level) end
+    end
+end
+
 function QMT:ApplyTrackingButtonPosition(force)
+    if self.IsForever and self:IsForever() then
+        return self:ApplyForeverTrackingButtonPosition(force)
+    end
     local tracking = self:GetNativeTrackingFrame()
     local flightActive = self.IsOutdoorFlightCenterActive and self:IsOutdoorFlightCenterActive()
     local useCorner = self:ShouldUseNativeTrackingCorner()
